@@ -315,9 +315,7 @@ async def main():
 
     print("Bot running...")
     await set_commands(app)  # Set up commands before polling
-    await app.initialize()
-    await app.start()
-    await app.run_polling()
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -292,7 +292,7 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     await update.message.reply_text(narrative)
 
-def main():
+async def init_app():
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN:
         print("Error: TELEGRAM_TOKEN not found in secrets")
@@ -305,8 +305,14 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_player_message))
 
     print("Bot running...")
-    asyncio.run(set_commands(app))
-    app.run_polling()
+    await set_commands(app)
+    await app.initialize()
+    await app.start()
+    await app.run_polling()
+    await app.stop()
+
+def main():
+    asyncio.run(init_app())
 
 if __name__ == "__main__":
     main()

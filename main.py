@@ -147,7 +147,10 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Each player type /choosefaction to select your faction.\nThe game will last 1 hour from now.")
 
     # End game after 60 minutes
-    asyncio.create_task(asyncio.sleep(3600).then(lambda: end_game(context.application, chat_id)))
+    async def schedule_end_game():
+        await asyncio.sleep(3600)
+        await end_game(context.application, chat_id)
+    asyncio.create_task(schedule_end_game())
 
 async def choosefaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -292,11 +295,12 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     await update.message.reply_text(narrative)
 
-async def init_app():
+def main():
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN:
         print("Error: TELEGRAM_TOKEN not found in secrets")
         return
+
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("startgame", startgame))
@@ -305,14 +309,7 @@ async def init_app():
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_player_message))
 
     print("Bot running...")
-    await set_commands(app)
-    await app.initialize()
-    await app.start()
-    await app.run_polling()
-    await app.stop()
-
-def main():
-    asyncio.run(init_app())
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()

@@ -110,7 +110,12 @@ async def set_commands(app):
         ("startgame", "Start a new campaign in Alpha City"),
         ("choosefaction", "Select your character's faction")
     ]
-    await app.bot.set_my_commands(commands)
+    try:
+        await app.bot.delete_my_commands()  # Clear existing commands
+        await app.bot.set_my_commands(commands)
+        print("Bot commands updated successfully")
+    except Exception as e:
+        print(f"Error setting commands: {e}")
 
 async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -309,6 +314,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_player_message))
 
     print("Bot running...")
+    await set_commands(app)  # Set up commands before polling
     app.run_polling()
 
 if __name__ == "__main__":

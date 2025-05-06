@@ -21,6 +21,11 @@ FACTIONS = {
     "Chainbreaker": {"hp": 14, "description": "Warrior-hero: brute strength and combat prowess."}
 }
 
+ACTIVE_GAME = {
+    "chat_id": None,
+    "end_task": None
+}
+
 ENEMY_AC = 12
 ENEMY_HP = 10
 
@@ -108,13 +113,28 @@ async def end_game(app, chat_id):
 
 async def set_commands(app):
     commands = [
-        ("startgame", "Start a new campaign in Alpha City"),
+        ("startgame (minutes)", "Start a new campaign in Alpha City, with a duration in minutes"),
         ("choosefaction", "Select your character's faction")
+        ("endgame", "End the current campaign")
     ]
     await app.bot.set_my_commands(commands)
 
 async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
+    # 1. only one game at a time
+    if ACTIVE_GAME["chat_id"] is not None:
+        await update.message.reply_text(
+            "⚠️ A game is already running (in chat "
+            f"{ACTIVE_GAME['chat_id']}). Use /endgame to stop it first."
+        )
+        return
+
+    # 2. parse duration argument (minutes)
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /startgame <minutes>")
+        return
+    duration_minutes = int(context.args[0])
     state = {
         "players": {},
         "log": [],
@@ -163,15 +183,20 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state["intro"] = intro_narrative
 
     save_state(chat_id, state)
-
     await update.message.reply_text(intro_narrative)
-    await update.message.reply_text("Each player type /choosefaction to select your faction.\nThe game will last 1 hour from now.")
+    await update.message.reply_text(
+        f"Each player: /choosefaction  \n"
+        f"The game will last {duration_minutes} minute(s)."
+    )
 
     # End game after 60 minutes
-    async def schedule_end_game():
-        await asyncio.sleep(3600)
+    async def schedule_end():
+        await asyncio.sleep(duration_minutes * 60)
         await end_game(context.application, chat_id)
-    asyncio.create_task(schedule_end_game())
+
+    task = asyncio.create_task(schedule_end())
+    ACTIVE_GAME["chat_id"] = chat_id
+    ACTIVE_GAME["end_task"] = task
 
 async def choosefaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -215,6 +240,26 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
     await query.edit_message_text(
         f"{username} has joined as a **{faction_choice}**!\n{faction_info['description']}\nStarting HP: {faction_info['hp']}"
     )
+
+async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    if ACTIVE_GAME["chat_id"] != chat_id:
+        await update.message.reply_text("❌ No active game in this chat.")
+        return
+
+    # cancel the pending auto–end if it hasn't fired
+    if ACTIVE_GAME["end_task"] and not ACTIVE_GAME["end_task"].done():
+        ACTIVE_GAME["end_task"].cancel()
+
+    # trigger the usual final-turns flow
+    await end_game(context.application, chat_id)
+
+    # clear the “lock”
+    ACTIVE_GAME["chat_id"] = None
+    ACTIVE_GAME["end_task"] = None
+
+    await update.message.reply_text("🏁 Game manually ended.")
 
 def parse_intent(message_text):
     lower = message_text.lower()
@@ -329,6 +374,7 @@ def main():
 
     app.add_handler(CommandHandler("startgame", startgame))
     app.add_handler(CommandHandler("choosefaction", choosefaction))
+    app.add_handler(CommandHandler("endgame", endgame))      # ← new
     app.add_handler(CallbackQueryHandler(faction_selection_callback, pattern="^faction:"))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_player_message))
 

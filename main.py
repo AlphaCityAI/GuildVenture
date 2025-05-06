@@ -147,7 +147,10 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Each player type /choosefaction to select your faction.\nThe game will last 1 hour from now.")
 
     # End game after 60 minutes
-    asyncio.create_task(asyncio.sleep(3600).then(lambda: end_game(context.application, chat_id)))
+    async def schedule_end_game():
+        await asyncio.sleep(3600)
+        await end_game(context.application, chat_id)
+    asyncio.create_task(schedule_end_game())
 
 async def choosefaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id

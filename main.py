@@ -3,7 +3,7 @@ import os
 import re
 import random
 import asyncio
-import openai
+from openai import OpenAI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 # OpenAI API key
 OPENAI_API_KEY = "YOUR_OPENAI_API_KEY_HERE"
-openai.api_key = OPENAI_API_KEY
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 FACTIONS = {
     "Glitchborn": {"hp": 12, "description": "A living ghost: stealth and sabotage specialist."},
@@ -88,7 +88,7 @@ async def check_end_final_turns(app, chat_id):
             f"Write a powerful closing scene."
         )
 
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=500
@@ -273,7 +273,7 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
         f"Describe what happens next."
     )
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=300

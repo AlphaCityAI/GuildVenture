@@ -304,7 +304,15 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         logger.info(f"Message received in chat {update.effective_chat.id}: {update.message.text!r}")
         chat_id = update.effective_chat.id
+        if not chat_id:
+            logger.error("No chat_id found in update")
+            return
+
         state = load_state(chat_id)
+        if not state:
+            logger.error(f"Could not load state for chat {chat_id}")
+            await update.message.reply_text("Error: Game state could not be loaded.")
+            return
 
         user_id = str(update.effective_user.id)
         username = update.effective_user.username or update.effective_user.first_name

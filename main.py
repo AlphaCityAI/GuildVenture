@@ -172,7 +172,7 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Living in the shadows, building black-market weapons and benevolent AI, these refugees slowly began their rebellion.\n\n"
         "Factions of note:\n"
         "The Overcity: Throne of the Oppressors\n"
-        "Overlords — Wealth-addicts corrupted by decades of unchallenged power. They own the economy, hoarding personal fortune while keeping the masses locked in financial servitude and tech-enforced slavery.\n\n"
+        "Overlords — Wealth-addicts corrupted by decades of unchallenged power. They own the economy, hoarding personal fortune while keeping the masses locked in financial servitude and tech-enforced enslavement.\n\n"
         "The Singularity — Soulless AI council ruling with mathematical precision and unflinching violence. They act as judges, executioners, and gods — determining who thrives and who gets digitally (or physically) erased.\n\n"
         "Neuralifes — Overcity citizens indoctrinated via high-tech propaganda and neural implants. They despise the rebels of the Underground, even as the Underground fights to save them…\n\n"
         "The Underground: Last Bastion of Freedom\n"
@@ -253,15 +253,15 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
 async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat_id = update.effective_chat.id
-        
+
         if not ACTIVE_GAME["chat_id"]:
             await update.message.reply_text("❌ No active game is running.")
             return
-            
+
         if ACTIVE_GAME["chat_id"] != chat_id:
             await update.message.reply_text("❌ No active game in this chat.")
             return
-            
+
         state = load_state(chat_id)
         if state.get("game_over", True):
             await update.message.reply_text("❌ Game is already over.")
@@ -282,17 +282,7 @@ async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in endgame: {e}", exc_info=True)
         await update.message.reply_text("❌ An error occurred while ending the game.")
-    if ACTIVE_GAME["end_task"] and not ACTIVE_GAME["end_task"].done():
-        ACTIVE_GAME["end_task"].cancel()
 
-    # trigger the usual final-turns flow
-    await end_game(context.application, chat_id)
-
-    # clear the “lock”
-    ACTIVE_GAME["chat_id"] = None
-    ACTIVE_GAME["end_task"] = None
-
-    await update.message.reply_text("🏁 Game manually ended.")
 
 def parse_intent(message_text):
     lower = message_text.lower()
@@ -313,91 +303,91 @@ def perform_attack():
 async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info(f"Message received in chat {update.effective_chat.id}: {update.message.text!r}")
-    chat_id = update.effective_chat.id
-    state = load_state(chat_id)
+        chat_id = update.effective_chat.id
+        state = load_state(chat_id)
 
-    user_id = str(update.effective_user.id)
-    username = update.effective_user.username or update.effective_user.first_name
-    message_text = update.message.text
+        user_id = str(update.effective_user.id)
+        username = update.effective_user.username or update.effective_user.first_name
+        message_text = update.message.text
 
-    if user_id not in state.get("players", {}):
-        return  # Silently ignore messages from users who haven't chosen a faction
+        if user_id not in state.get("players", {}):
+            return  # Silently ignore messages from users who haven't chosen a faction
 
-    if state.get("game_over"):
-        await update.message.reply_text("The campaign has ended. Please /startgame to begin a new one.")
-        return
+        if state.get("game_over"):
+            await update.message.reply_text("The campaign has ended. Please /startgame to begin a new one.")
+            return
 
-    if state.get("final_turns_active"):
-        if user_id in state["final_turns_received"]:
-            await update.message.reply_text("✅ Your final action is already recorded!")
+        if state.get("final_turns_active"):
+            if user_id in state["final_turns_received"]:
+                await update.message.reply_text("✅ Your final action is already recorded!")
+            else:
+                state["final_turns_received"][user_id] = message_text
+                save_state(chat_id, state)
+                await update.message.reply_text(f"Final action recorded for {username}.")
+                await check_end_final_turns(context.application, chat_id)
+            return
+
+        if user_id not in state["players"]:
+            await update.message.reply_text("Please choose a faction first using /choosefaction!")
+            return
+
+        player_data = state["players"][user_id]
+        faction = player_data["faction"]
+        hp = player_data["hp"]
+
+        intent = parse_intent(message_text)
+        action_result = ""
+
+        if intent == "attack":
+            attack_roll, damage_roll = perform_attack()
+            if attack_roll >= ENEMY_AC:
+                state["enemy_hp"] -= damage_roll
+                action_result = f"Attack roll: {attack_roll} (hit), Damage: {damage_roll}. Enemy HP now {state['enemy_hp']}."
+                if state["enemy_hp"] <= 0:
+                    action_result += " The enemy is defeated!"
+            else:
+                action_result = f"Attack roll: {attack_roll} (miss)."
+        elif intent == "move":
+            action_result = f"{username} moves strategically."
+        elif intent == "interact":
+            action_result = f"{username} attempts to interact."
         else:
-            state["final_turns_received"][user_id] = message_text
-            save_state(chat_id, state)
-            await update.message.reply_text(f"Final action recorded for {username}.")
-            await check_end_final_turns(context.application, chat_id)
-        return
+            action_result = f"{username} acts creatively."
 
-    if user_id not in state["players"]:
-        await update.message.reply_text("Please choose a faction first using /choosefaction!")
-        return
+        log_entry = f"{username} ({faction}): {message_text} → {action_result}"
+        state["log"].append(log_entry)
+        if len(state["log"]) > 5:
+            state["log"] = state["log"][-5:]
 
-    player_data = state["players"][user_id]
-    faction = player_data["faction"]
-    hp = player_data["hp"]
+        save_state(chat_id, state)
 
-    intent = parse_intent(message_text)
-    action_result = ""
+        system_prompt = (
+            "You are a Dungeon Master narrating a cyberpunk dystopian RPG set in Alpha City.\n"
+            "Describe the next scene with immersive, gritty narrative. End with a prompt for the players to make a decision. Max 300 characters."
+        )
 
-    if intent == "attack":
-        attack_roll, damage_roll = perform_attack()
-        if attack_roll >= ENEMY_AC:
-            state["enemy_hp"] -= damage_roll
-            action_result = f"Attack roll: {attack_roll} (hit), Damage: {damage_roll}. Enemy HP now {state['enemy_hp']}."
-            if state["enemy_hp"] <= 0:
-                action_result += " The enemy is defeated!"
-        else:
-            action_result = f"Attack roll: {attack_roll} (miss)."
-    elif intent == "move":
-        action_result = f"{username} moves strategically."
-    elif intent == "interact":
-        action_result = f"{username} attempts to interact."
-    else:
-        action_result = f"{username} acts creatively."
+        current_state = "\n".join(
+            [f"{p['username']} ({p['faction']}, {p['hp']} HP)" for p in state["players"].values()]
+        )
+        recent_log = "\n".join(state["log"])
 
-    log_entry = f"{username} ({faction}): {message_text} → {action_result}"
-    state["log"].append(log_entry)
-    if len(state["log"]) > 5:
-        state["log"] = state["log"][-5:]
+        prompt = (
+            f"{system_prompt}\n\n"
+            f"Campaign intro:\n{state['intro']}\n\n"
+            f"Current state:\n{current_state}\nEnemy HP: {state['enemy_hp']}\n\n"
+            f"Recent events:\n{recent_log}\n\n"
+            f"Describe what happens next."
+        )
 
-    save_state(chat_id, state)
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300
+        )
 
-    system_prompt = (
-        "You are a Dungeon Master narrating a cyberpunk dystopian RPG set in Alpha City.\n"
-        "Describe the next scene with immersive, gritty narrative. End with a prompt for the players to make a decision. Max 300 characters."
-    )
+        narrative = response.choices[0].message.content.strip()
 
-    current_state = "\n".join(
-        [f"{p['username']} ({p['faction']}, {p['hp']} HP)" for p in state["players"].values()]
-    )
-    recent_log = "\n".join(state["log"])
-
-    prompt = (
-        f"{system_prompt}\n\n"
-        f"Campaign intro:\n{state['intro']}\n\n"
-        f"Current state:\n{current_state}\nEnemy HP: {state['enemy_hp']}\n\n"
-        f"Recent events:\n{recent_log}\n\n"
-        f"Describe what happens next."
-    )
-
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=300
-    )
-
-    narrative = response.choices[0].message.content.strip()
-
-    await update.message.reply_text(narrative)
+        await update.message.reply_text(narrative)
     except Exception as e:
         logger.error(f"Error in handle_player_message: {e}", exc_info=True)
         await update.message.reply_text("An error occurred while processing your message. Please try again.")

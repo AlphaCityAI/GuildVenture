@@ -80,6 +80,7 @@ async def check_end_final_turns(app, chat_id):
             "Write an epic, emotional narrative epilogue that describes the fate of each player individually, based on their final actions.\n"
             "Tie their choices to the overall outcome of the rebellion and the fate of Alpha City.\n"
             "Be cinematic, dramatic, and poetic, as if closing a movie."
+            "Maximum 500 characters."
         )
 
         prompt = (
@@ -269,7 +270,7 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     system_prompt = (
         "You are a Dungeon Master narrating a cyberpunk dystopian RPG set in Alpha City.\n"
-        "Describe the next scene with immersive, gritty narrative."
+        "Describe the next scene with immersive, gritty narrative. End with a prompt for the players to make a decision. Max 300 characters."
     )
 
     current_state = "\n".join(

@@ -278,6 +278,7 @@ def perform_attack():
     return attack_roll, damage_roll
 
 async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[DEBUG] got message in chat {update.effective_chat.id}: {update.message.text!r}")
     chat_id = update.effective_chat.id
     state = load_state(chat_id)
 
@@ -364,6 +365,11 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     await update.message.reply_text(narrative)
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    # catches any exception in your handlers so they don't crash the polling loop
+    print(f"[ERROR] update {update} raised {context.error!r}")
+    return True
+
 def main():
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN:
@@ -372,14 +378,24 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
+    # your existing handlers…
     app.add_handler(CommandHandler("startgame", startgame))
     app.add_handler(CommandHandler("choosefaction", choosefaction))
-    app.add_handler(CommandHandler("endgame", endgame))      # ← new
+    app.add_handler(CommandHandler("endgame", endgame))
     app.add_handler(CallbackQueryHandler(faction_selection_callback, pattern="^faction:"))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_player_message))
 
-    print("Bot running...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # register the global error‐handler
+    app.add_error_handler(error_handler)
 
-if __name__ == "__main__":
-    main()
+    print("Bot starting polling…")
+    # retry loop to recover from network errors
+    while True:
+        try:
+            app.run_polling(allowed_updates=Update.ALL_TYPES)
+        except NetworkError as e:
+            print(f"[WARN] NetworkError: {e!r}. Retrying in 5s…")
+            time.sleep(5)
+        except Exception as e:
+            print(f"[CRASH] Unhandled exception: {e!r}. Restarting in 5s…")
+            time.sleep(5)

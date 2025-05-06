@@ -220,6 +220,9 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
     username = update.effective_user.username or update.effective_user.first_name
     message_text = update.message.text
 
+    if user_id not in state.get("players", {}):
+        return  # Silently ignore messages from users who haven't chosen a faction
+
     if state.get("game_over"):
         await update.message.reply_text("The campaign has ended. Please /startgame to begin a new one.")
         return

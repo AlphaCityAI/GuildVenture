@@ -113,8 +113,8 @@ async def end_game(app, chat_id):
 
 async def set_commands(app):
     commands = [
-        ("startgame (minutes)", "Start a new campaign in Alpha City, with a duration in minutes"),
-        ("choosefaction", "Select your character's faction")
+        ("startgame", "Start a new campaign in Alpha City, with a duration in minutes"),
+        ("choosefaction", "Select your character's faction"),
         ("endgame", "End the current campaign")
     ]
     await app.bot.set_my_commands(commands)

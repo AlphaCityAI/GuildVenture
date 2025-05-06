@@ -124,7 +124,7 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n\nWrite a 3-5 paragraph campaign intro to kick off a one-hour rebellion adventure."
     )
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": lore_prompt}],
         max_tokens=500

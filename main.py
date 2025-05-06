@@ -129,31 +129,28 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "You are a Dungeon Master introducing a unique cyberpunk dystopian D&D campaign set in Alpha City.\n"
         "Use the following lore to generate a dramatic opening narrative that introduces the setting, stakes, and starting scenario for the players.\n"
         "Lore:\n"
-        "Decades ago, the promise of blockchain technology was decentralization, freedom, and economic self-sovereignty. Humanity embraced the worldwide integration of trustless, transparent transactions — fully expecting that it would usher in a golden age of prosperity.
-
-But that dream was stolen. Under the guise of 'protection from volatility,' coin oligarchs seized control. Leveraging the power of artificial intelligence and social modification protocols, cabal syndicates created a brutal new system of oppression and insider corruption. They claimed they would use their power to share wealth. Instead, they hoarded it — turning the transparency of the blockchain into a tool for monitoring every transaction, interaction and identity. Meanwhile, cybernetic upgrades — advertised and sold as utility — instead became a system of propaganda distribution and thought-modification.
-
-The result was a worldwide dystopia, ruled by a coalition of trillionaire dynasties and their AI-led enslavement forces. With growing control over digital assets, weapons, and misinformation channels, these Overlords crushed their opponents and made cults of the masses. Meanwhile, neural implants became mandatory — ensuring blockchain-enabled thought-control from birth until death.
-
-Maligned and persecuted, the last vestiges of free humanity fled to the catacombs and abandoned warehouses in the Underground of Alpha City — the World Capital. Many were illegal children, natural born and without cybernetic manipulation. Others destroyed their bio-mods or hacked their implants, providing unique abilities free of Overlord control. Living in the shadows, building black-market weapons and benevolent AI, these refugees slowly began their rebellion.
-
-Factions of note:
-The Overcity: Throne of the Oppressors
-Overlords — Wealth-addicts corrupted by decades of unchallenged power. They own the economy, hoarding personal fortune while keeping the masses locked in financial servitude and tech-enforced slavery.
-
-The Singularity — Soulless AI council ruling with mathematical precision and unflinching violence. They act as judges, executioners, and gods — determining who thrives and who gets digitally (or physically) erased.
-
-Neuralifes — Overcity citizens indoctrinated via high-tech propaganda and neural implants. They despise the rebels of the Underground, even as the Underground fights to save them…
-
-The Underground: Last Bastion of Freedom
-Glitchborn — Illegal, unregistered, and born free of techno-implants, the Glitchborn are living ghosts. Saboteurs, assassins, and espionage-specialists, they operate outside the Overlords’ control, unknown and unnamed even by The Singularity.
-
-Nodewalkers — Data-mystics of Alpha City, the Nodewalkers are the result of early-gen neural implants hacked and optimized by the Underground. Minds encrypted but wired into the blockchain, they can manipulate data, forge identities, and hijack Overcity mainframes.
-
-Coinbrokers — Black-market financiers of the rebellion. They deal in forbidden tokens, untraceable assets, and off-chain wealth. Their genius keeps the revolution alive by funding weapons, tech, and bribes.
-
-Chainbreakers — Born via genetic modification, Chainbreakers are the only humans strong enough to survive destruction of their neural implants. Wielding weaponized augments from the Underground, Chainbreakers are the warrior-heroes of the revolution."
-        "\n\nWrite a 1-3 paragraph campaign intro to kick off a one-hour rebellion adventure."
+        "Decades ago, the promise of blockchain technology was decentralization, freedom, and economic self-sovereignty. "
+        "Humanity embraced the worldwide integration of trustless, transparent transactions — fully expecting that it would usher in a golden age of prosperity.\n\n"
+        "But that dream was stolen. Under the guise of 'protection from volatility,' coin oligarchs seized control. "
+        "Leveraging the power of artificial intelligence and social modification protocols, cabal syndicates created a brutal new system of oppression and insider corruption. "
+        "They claimed they would use their power to share wealth. Instead, they hoarded it — turning the transparency of the blockchain into a tool for monitoring every transaction, "
+        "interaction and identity. Meanwhile, cybernetic upgrades — advertised and sold as utility — instead became a system of propaganda distribution and thought-modification.\n\n"
+        "The result was a worldwide dystopia, ruled by a coalition of trillionaire dynasties and their AI-led enslavement forces. "
+        "With growing control over digital assets, weapons, and misinformation channels, these Overlords crushed their opponents and made cults of the masses. "
+        "Meanwhile, neural implants became mandatory — ensuring blockchain-enabled thought-control from birth until death.\n\n"
+        "Maligned and persecuted, the last vestiges of free humanity fled to the catacombs and abandoned warehouses in the Underground of Alpha City — the World Capital. "
+        "Many were illegal children, natural born and without cybernetic manipulation. Others destroyed their bio-mods or hacked their implants, providing unique abilities free of Overlord control. "
+        "Living in the shadows, building black-market weapons and benevolent AI, these refugees slowly began their rebellion.\n\n"
+        "Factions of note:\n"
+        "The Overcity: Throne of the Oppressors\n"
+        "Overlords — Wealth-addicts corrupted by decades of unchallenged power. They own the economy, hoarding personal fortune while keeping the masses locked in financial servitude and tech-enforced slavery.\n\n"
+        "The Singularity — Soulless AI council ruling with mathematical precision and unflinching violence. They act as judges, executioners, and gods — determining who thrives and who gets digitally (or physically) erased.\n\n"
+        "Neuralifes — Overcity citizens indoctrinated via high-tech propaganda and neural implants. They despise the rebels of the Underground, even as the Underground fights to save them…\n\n"
+        "The Underground: Last Bastion of Freedom\n"
+        "Glitchborn — Illegal, unregistered, and born free of techno-implants, the Glitchborn are living ghosts. Saboteurs, assassins, and espionage-specialists, they operate outside the Overlords' control, unknown and unnamed even by The Singularity.\n\n"
+        "Nodewalkers — Data-mystics of Alpha City, the Nodewalkers are the result of early-gen neural implants hacked and optimized by the Underground. Minds encrypted but wired into the blockchain, they can manipulate data, forge identities, and hijack Overcity mainframes.\n\n"
+        "Coinbrokers — Black-market financiers of the rebellion. They deal in forbidden tokens, untraceable assets, and off-chain wealth. Their genius keeps the revolution alive by funding weapons, tech, and bribes.\n\n"
+        "Chainbreakers — Born via genetic modification, Chainbreakers are the only humans strong enough to survive destruction of their neural implants. Wielding weaponized augments from the Underground, Chainbreakers are the warrior-heroes of the revolution."
     )
 
     response = client.chat.completions.create(

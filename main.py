@@ -3,7 +3,6 @@ import os
 import re
 import random
 import asyncio
-import time
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -59,18 +58,9 @@ async def trigger_final_turns(app, chat_id):
     save_state(chat_id, state)
     await app.bot.send_message(chat_id, "⏰ The campaign is nearing its end! Each player gets **one final action**. Type it now!")
 
-    # Force end after timeout even if not all players responded
-    try:
-        await asyncio.sleep(300)  # 5 min timeout
-        state = load_state(chat_id)
-        if state["final_turns_active"]:  # If still in final turns
-            state["game_over"] = True
-            save_state(chat_id, state)
-            await app.bot.send_message(chat_id, "Time's up! The campaign has ended. Start a new one with /startgame")
-    except Exception as e:
-        print(f"Error in final turns timeout: {e}")
-        state["game_over"] = True
-        save_state(chat_id, state)
+    # Optional timeout: force end if players don’t reply in X minutes
+    await asyncio.sleep(300)  # 5 min timeout
+    await check_end_final_turns(app, chat_id)
 
 async def check_end_final_turns(app, chat_id):
     state = load_state(chat_id)
@@ -86,11 +76,11 @@ async def check_end_final_turns(app, chat_id):
         )
 
         system_prompt = (
-            "You are a deranged, humorous Dungeon Master concluding a dystopian cyberpunk D&D campaign set in Alpha City.\n"
-            "Write an epic, narrative epilogue that describes the fate of each player individually, based on their final actions.\n"
+            "You are a Dungeon Master concluding a dystopian cyberpunk D&D campaign set in Alpha City.\n"
+            "Write an epic, emotional narrative epilogue that describes the fate of each player individually, based on their final actions.\n"
             "Tie their choices to the overall outcome of the rebellion and the fate of Alpha City.\n"
             "Be cinematic, dramatic, and poetic, as if closing a movie."
-            "Maximum 400 characters."
+            "Maximum 500 characters."
         )
 
         prompt = (
@@ -119,31 +109,12 @@ async def end_game(app, chat_id):
 async def set_commands(app):
     commands = [
         ("startgame", "Start a new campaign in Alpha City"),
-        ("choosefaction", "Select your character's faction"),
-        ("endgame", "Trigger the final turn sequence")
+        ("choosefaction", "Select your character's faction")
     ]
     await app.bot.set_my_commands(commands)
 
 async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-
-    # Check if a game is already running
-    if os.path.exists(get_state_file(chat_id)):
-        state = load_state(chat_id)
-        if not state.get("game_over", False):
-            await update.message.reply_text("A game is already in progress! Wait for it to end or let it timeout.")
-            return
-
-    # Get duration from command arguments
-    try:
-        duration = int(context.args[0]) if context.args else 30  # Default 30 minutes if no duration specified
-        if duration < 1 or duration > 120:  # Limit between 1 and 120 minutes
-            await update.message.reply_text("Please specify a duration between 1 and 120 minutes.\nExample: /startgame 15")
-            return
-    except (ValueError, IndexError):
-        await update.message.reply_text("Please specify a valid duration in minutes.\nExample: /startgame 15")
-        return
-
     state = {
         "players": {},
         "log": [],
@@ -151,14 +122,12 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "game_over": False,
         "final_turns_active": False,
         "final_turns_received": {},
-        "intro": "",
-        "duration": duration,
-        "start_time": int(time.time())
+        "intro": ""
     }
 
     lore_prompt = (
-        "You are a deranged, ridiculous Dungeon Master introducing a unique cyberpunk dystopian D&D campaign set in Alpha City.\n"
-        "Use the following lore to generate a dramatic opening narrative that introduces the setting, stakes, and starting scenario for the players. Maximum 500 characters. \n"
+        "You are a Dungeon Master introducing a unique cyberpunk dystopian D&D campaign set in Alpha City.\n"
+        "Use the following lore to generate a dramatic opening narrative that introduces the setting, stakes, and starting scenario for the players.\n"
         "Lore:\n"
         "Decades ago, the promise of blockchain technology was decentralization, freedom, and economic self-sovereignty. "
         "Humanity embraced the worldwide integration of trustless, transparent transactions — fully expecting that it would usher in a golden age of prosperity.\n\n"
@@ -196,15 +165,13 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_state(chat_id, state)
 
     await update.message.reply_text(intro_narrative)
-    await update.message.reply_text("Each player type /choosefaction to select your faction.\nThe game will last 30 minutes.")
+    await update.message.reply_text("Each player type /choosefaction to select your faction.\nThe game will last 1 hour from now.")
 
-    # End game after specified duration
+    # End game after 60 minutes
     async def schedule_end_game():
-        await asyncio.sleep(duration * 60)  # Convert minutes to seconds
+        await asyncio.sleep(3600)
         await end_game(context.application, chat_id)
     asyncio.create_task(schedule_end_game())
-
-    await update.message.reply_text(f"Campaign will last {duration} minutes.")
 
 async def choosefaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -325,8 +292,8 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
     save_state(chat_id, state)
 
     system_prompt = (
-        "You are a truly deranged, hilarious Dungeon Master narrating a cyberpunk dystopian RPG set in Alpha City.\n"
-        "Describe the next scene with immersive, gritty, deranged narrative that allows for players to choose their next action. Max 300 characters."
+        "You are a Dungeon Master narrating a cyberpunk dystopian RPG set in Alpha City.\n"
+        "Describe the next scene with immersive, gritty narrative. End with a prompt for the players to make a decision. Max 300 characters."
     )
 
     current_state = "\n".join(
@@ -360,18 +327,8 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
-    async def endgame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        chat_id = update.effective_chat.id
-        state = load_state(chat_id)
-        if not state or state.get("game_over"):
-            await update.message.reply_text("No active game found. Start a new one with /startgame")
-            return
-        await update.message.reply_text("Initiating final turn sequence...")
-        await trigger_final_turns(context.application, chat_id)
-
     app.add_handler(CommandHandler("startgame", startgame))
     app.add_handler(CommandHandler("choosefaction", choosefaction))
-    app.add_handler(CommandHandler("endgame", endgame_command))
     app.add_handler(CallbackQueryHandler(faction_selection_callback, pattern="^faction:"))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_player_message))
 

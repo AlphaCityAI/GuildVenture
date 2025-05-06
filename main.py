@@ -76,11 +76,11 @@ async def check_end_final_turns(app, chat_id):
         )
 
         system_prompt = (
-            "You are a Dungeon Master concluding a dystopian cyberpunk D&D campaign set in Alpha City.\n"
-            "Write an epic, emotional narrative epilogue that describes the fate of each player individually, based on their final actions.\n"
+            "You are a deranged, humorous Dungeon Master concluding a dystopian cyberpunk D&D campaign set in Alpha City.\n"
+            "Write an epic, narrative epilogue that describes the fate of each player individually, based on their final actions.\n"
             "Tie their choices to the overall outcome of the rebellion and the fate of Alpha City.\n"
             "Be cinematic, dramatic, and poetic, as if closing a movie."
-            "Maximum 500 characters."
+            "Maximum 400 characters."
         )
 
         prompt = (
@@ -126,8 +126,8 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     lore_prompt = (
-        "You are a Dungeon Master introducing a unique cyberpunk dystopian D&D campaign set in Alpha City.\n"
-        "Use the following lore to generate a dramatic opening narrative that introduces the setting, stakes, and starting scenario for the players.\n"
+        "You are a deranged, ridiculous Dungeon Master introducing a unique cyberpunk dystopian D&D campaign set in Alpha City.\n"
+        "Use the following lore to generate a dramatic opening narrative that introduces the setting, stakes, and starting scenario for the players. Maximum 500 characters. \n"
         "Lore:\n"
         "Decades ago, the promise of blockchain technology was decentralization, freedom, and economic self-sovereignty. "
         "Humanity embraced the worldwide integration of trustless, transparent transactions — fully expecting that it would usher in a golden age of prosperity.\n\n"
@@ -165,11 +165,11 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_state(chat_id, state)
 
     await update.message.reply_text(intro_narrative)
-    await update.message.reply_text("Each player type /choosefaction to select your faction.\nThe game will last 1 hour from now.")
+    await update.message.reply_text("Each player type /choosefaction to select your faction.\nThe game will last 30 minutes.")
 
-    # End game after 60 minutes
+    # End game after 30 minutes
     async def schedule_end_game():
-        await asyncio.sleep(3600)
+        await asyncio.sleep(1800)
         await end_game(context.application, chat_id)
     asyncio.create_task(schedule_end_game())
 
@@ -292,8 +292,8 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
     save_state(chat_id, state)
 
     system_prompt = (
-        "You are a Dungeon Master narrating a cyberpunk dystopian RPG set in Alpha City.\n"
-        "Describe the next scene with immersive, gritty narrative. End with a prompt for the players to make a decision. Max 300 characters."
+        "You are a truly deranged, hilarious Dungeon Master narrating a cyberpunk dystopian RPG set in Alpha City.\n"
+        "Describe the next scene with immersive, gritty, deranged narrative that allows for players to choose their next action. Max 300 characters."
     )
 
     current_state = "\n".join(

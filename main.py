@@ -110,7 +110,8 @@ async def end_game(app, chat_id):
 async def set_commands(app):
     commands = [
         ("startgame", "Start a new campaign in Alpha City"),
-        ("choosefaction", "Select your character's faction")
+        ("choosefaction", "Select your character's faction"),
+        ("endgame", "Trigger the final turn sequence")
     ]
     await app.bot.set_my_commands(commands)
 
@@ -350,8 +351,18 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
+    async def endgame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = update.effective_chat.id
+        state = load_state(chat_id)
+        if not state or state.get("game_over"):
+            await update.message.reply_text("No active game found. Start a new one with /startgame")
+            return
+        await update.message.reply_text("Initiating final turn sequence...")
+        await trigger_final_turns(context.application, chat_id)
+
     app.add_handler(CommandHandler("startgame", startgame))
     app.add_handler(CommandHandler("choosefaction", choosefaction))
+    app.add_handler(CommandHandler("endgame", endgame_command))
     app.add_handler(CallbackQueryHandler(faction_selection_callback, pattern="^faction:"))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_player_message))
 

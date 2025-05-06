@@ -267,7 +267,21 @@ async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Game is already over.")
             return
 
-    # cancel the pending auto–end if it hasn't fired
+        # cancel the pending auto–end if it hasn't fired
+        if ACTIVE_GAME["end_task"] and not ACTIVE_GAME["end_task"].done():
+            ACTIVE_GAME["end_task"].cancel()
+
+        # trigger the usual final-turns flow
+        await end_game(context.application, chat_id)
+
+        # clear the "lock"
+        ACTIVE_GAME["chat_id"] = None
+        ACTIVE_GAME["end_task"] = None
+
+        await update.message.reply_text("🏁 Game manually ended.")
+    except Exception as e:
+        logger.error(f"Error in endgame: {e}", exc_info=True)
+        await update.message.reply_text("❌ An error occurred while ending the game.")
     if ACTIVE_GAME["end_task"] and not ACTIVE_GAME["end_task"].done():
         ACTIVE_GAME["end_task"].cancel()
 

@@ -3,11 +3,20 @@ import os
 import re
 import random
 import asyncio
+import time
+import logging
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.error import NetworkError
+
+# Set up logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # OpenAI API key
 import os
@@ -242,11 +251,21 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
     )
 
 async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-
-    if ACTIVE_GAME["chat_id"] != chat_id:
-        await update.message.reply_text("❌ No active game in this chat.")
-        return
+    try:
+        chat_id = update.effective_chat.id
+        
+        if not ACTIVE_GAME["chat_id"]:
+            await update.message.reply_text("❌ No active game is running.")
+            return
+            
+        if ACTIVE_GAME["chat_id"] != chat_id:
+            await update.message.reply_text("❌ No active game in this chat.")
+            return
+            
+        state = load_state(chat_id)
+        if state.get("game_over", True):
+            await update.message.reply_text("❌ Game is already over.")
+            return
 
     # cancel the pending auto–end if it hasn't fired
     if ACTIVE_GAME["end_task"] and not ACTIVE_GAME["end_task"].done():
@@ -278,7 +297,8 @@ def perform_attack():
     return attack_roll, damage_roll
 
 async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"[DEBUG] got message in chat {update.effective_chat.id}: {update.message.text!r}")
+    try:
+        logger.info(f"Message received in chat {update.effective_chat.id}: {update.message.text!r}")
     chat_id = update.effective_chat.id
     state = load_state(chat_id)
 
@@ -364,6 +384,9 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
     narrative = response.choices[0].message.content.strip()
 
     await update.message.reply_text(narrative)
+    except Exception as e:
+        logger.error(f"Error in handle_player_message: {e}", exc_info=True)
+        await update.message.reply_text("An error occurred while processing your message. Please try again.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     # catches any exception in your handlers so they don't crash the polling loop

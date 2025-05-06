@@ -59,9 +59,18 @@ async def trigger_final_turns(app, chat_id):
     save_state(chat_id, state)
     await app.bot.send_message(chat_id, "⏰ The campaign is nearing its end! Each player gets **one final action**. Type it now!")
 
-    # Optional timeout: force end if players don’t reply in X minutes
-    await asyncio.sleep(300)  # 5 min timeout
-    await check_end_final_turns(app, chat_id)
+    # Force end after timeout even if not all players responded
+    try:
+        await asyncio.sleep(300)  # 5 min timeout
+        state = load_state(chat_id)
+        if state["final_turns_active"]:  # If still in final turns
+            state["game_over"] = True
+            save_state(chat_id, state)
+            await app.bot.send_message(chat_id, "Time's up! The campaign has ended. Start a new one with /startgame")
+    except Exception as e:
+        print(f"Error in final turns timeout: {e}")
+        state["game_over"] = True
+        save_state(chat_id, state)
 
 async def check_end_final_turns(app, chat_id):
     state = load_state(chat_id)
@@ -117,14 +126,14 @@ async def set_commands(app):
 
 async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    
+
     # Check if a game is already running
     if os.path.exists(get_state_file(chat_id)):
         state = load_state(chat_id)
         if not state.get("game_over", False):
             await update.message.reply_text("A game is already in progress! Wait for it to end or let it timeout.")
             return
-    
+
     # Get duration from command arguments
     try:
         duration = int(context.args[0]) if context.args else 30  # Default 30 minutes if no duration specified
@@ -134,7 +143,7 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (ValueError, IndexError):
         await update.message.reply_text("Please specify a valid duration in minutes.\nExample: /startgame 15")
         return
-        
+
     state = {
         "players": {},
         "log": [],
@@ -194,7 +203,7 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(duration * 60)  # Convert minutes to seconds
         await end_game(context.application, chat_id)
     asyncio.create_task(schedule_end_game())
-    
+
     await update.message.reply_text(f"Campaign will last {duration} minutes.")
 
 async def choosefaction(update: Update, context: ContextTypes.DEFAULT_TYPE):

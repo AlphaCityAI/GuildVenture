@@ -105,6 +105,13 @@ async def check_end_final_turns(app, chat_id):
 async def end_game(app, chat_id):
     await trigger_final_turns(app, chat_id)  # Instead of ending → trigger final turns
 
+async def set_commands(app):
+    commands = [
+        ("startgame", "Start a new campaign in Alpha City"),
+        ("choosefaction", "Select your character's faction")
+    ]
+    await app.bot.set_my_commands(commands)
+
 async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     state = {
@@ -139,7 +146,8 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(intro_narrative)
     await update.message.reply_text("Each player type /choosefaction to select your faction.\nThe game will last 1 hour from now.")
 
-    asyncio.create_task(end_game(context.application, chat_id))
+    # End game after 60 minutes
+    asyncio.create_task(asyncio.sleep(3600).then(lambda: end_game(context.application, chat_id)))
 
 async def choosefaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -297,6 +305,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_player_message))
 
     print("Bot running...")
+    asyncio.run(set_commands(app))
     app.run_polling()
 
 if __name__ == "__main__":

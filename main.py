@@ -312,16 +312,20 @@ async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    state = await load_state(chat_id)
-    # only respond in game thread
+    state   = await load_state(chat_id)
+
+    # only respond in the topic where /startgame was run
     thread_id = state.get("thread_id")
     if thread_id and update.effective_message.message_thread_id != thread_id:
         return
-    user_id = str(update.effective_user.id)
-    text    = update.message.text.strip()
 
+    # **ignore anyone who hasn't chosen a faction**
+    user_id = str(update.effective_user.id)
     if user_id not in state["players"]:
         return
+
+    user_id = str(update.effective_user.id)
+    text    = update.message.text.strip()
 
     if state["game_over"]:
         return

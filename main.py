@@ -109,6 +109,7 @@ async def save_state(chat_id: int, state: dict):
 # ───────── Final-Turns & Epilogue ─────────
 async def generate_image(prompt: str) -> str | None:
     try:
+        logger.info("Generating image with prompt: %s", prompt)
         # wrap the blocking SDK call in a thread
         resp = await asyncio.to_thread(
             client.images.generate,            # or client.images.create in older SDKs

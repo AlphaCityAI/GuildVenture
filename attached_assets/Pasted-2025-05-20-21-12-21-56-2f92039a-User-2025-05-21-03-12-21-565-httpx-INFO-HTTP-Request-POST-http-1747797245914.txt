@@ -1,0 +1,84 @@
+2025-05-20 21:12:21.56
+2f92039a
+User
+2025-05-21 03:12:21,565 httpx [INFO] HTTP Request: POST https://api.openai.com/v1/images/generations "HTTP/1.1 400 Bad Request"
+2025-05-20 21:12:21.58
+2f92039a
+User
+2025-05-21 03:12:21,569 __main__ [ERROR] Error generating image: Error code: 400 - {'error': {'message': None, 'type': 'image_generation_user_error', 'param': None, 'code': None}}
+2025-05-20 21:12:21.58
+2f92039a
+User
+Traceback (most recent call last):
+2025-05-20 21:12:21.58
+2f92039a
+User
+File "/home/runner/workspace/main.py", line 113, in generate_image
+2025-05-20 21:12:21.58
+2f92039a
+User
+resp = await asyncio.to_thread(
+2025-05-20 21:12:21.58
+2f92039a
+User
+^^^^^^^^^^^^^^^^^^^^^^^^
+2025-05-20 21:12:21.58
+2f92039a
+User
+File "/nix/store/clx0mcir7qw8zk36zbr4jra789g3knf6-python3-3.11.10/lib/python3.11/asyncio/threads.py", line 25, in to_thread
+2025-05-20 21:12:21.58
+2f92039a
+User
+return await loop.run_in_executor(None, func_call)
+2025-05-20 21:12:21.58
+2f92039a
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2025-05-20 21:12:21.58
+2f92039a
+User
+File "/nix/store/clx0mcir7qw8zk36zbr4jra789g3knf6-python3-3.11.10/lib/python3.11/concurrent/futures/thread.py", line 58, in run
+2025-05-20 21:12:21.58
+2f92039a
+User
+result = self.fn(*self.args, **self.kwargs)
+2025-05-20 21:12:21.58
+2f92039a
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2025-05-20 21:12:21.58
+2f92039a
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/openai/resources/images.py", line 322, in generate
+2025-05-20 21:12:21.58
+2f92039a
+User
+return self._post(
+2025-05-20 21:12:21.58
+2f92039a
+User
+^^^^^^^^^^^
+2025-05-20 21:12:21.58
+2f92039a
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/openai/_base_client.py", line 1239, in post
+2025-05-20 21:12:21.58
+2f92039a
+User
+return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+2025-05-20 21:12:21.58
+2f92039a
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2025-05-20 21:12:21.58
+2f92039a
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/openai/_base_client.py", line 1034, in request
+2025-05-20 21:12:21.58
+2f92039a
+User
+raise self._make_status_error_from_response(err.response) from None
+2025-05-20 21:12:21.58
+2f92039a
+User
+openai.BadRequestError: Error code: 400 - {'error': {'message': None, 'type': 'image_generation_user_error', 'param': None, 'code': None}}

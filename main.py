@@ -3,9 +3,9 @@ import json
 import asyncio
 import logging
 import time
-
 from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InputMediaPhoto
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -107,6 +107,22 @@ async def save_state(chat_id: int, state: dict):
             logger.error("Failed to save state[%s]: %s", chat_id, e)
 
 # ───────── Final-Turns & Epilogue ─────────
+async def generate_image(prompt: str) -> str | None:
+    try:
+        # wrap the blocking SDK call in a thread
+        resp = await asyncio.to_thread(
+            client.images.generate,            # or client.images.create in older SDKs
+            prompt=prompt,
+            n=1,
+            size="1024x1024",
+            model="dall-e-3",
+            quality="hd"
+        )
+        return resp.data[0].url
+    except Exception as e:
+        logger.error("Error generating image: %s", e, exc_info=True)
+        return None
+
 async def trigger_final_turns(app: Application, chat_id: int):
     state = await load_state(chat_id)
     state["final_turns_active"] = True
@@ -124,37 +140,59 @@ async def run_epilogue(app: Application, chat_id: int):
     if state["game_over"]:
         return
 
+    # 1) Collate final player actions
     final_actions = "\n".join(
         f"{state['players'][uid]['username']} ({state['players'][uid]['faction']}): {msg}"
         for uid, msg in state["final_turns_received"].items()
     ) or "No final actions recorded."
 
+    # 2) Build system + user prompts
     system_prompt = (
         "You are a deranged Dungeon Master concluding a grimdark, dystopian cyberpunk D&D campaign set in Alpha City.\n"
         "Write an epilogue that describes the fate of each player based on their final actions.\n"
         "Tie these choices to the outcome of the rebellion. ≤500 chars."
     )
-    prompt = (
-        f"{system_prompt}\n\n"
+    user_prompt = (
         f"Campaign intro:\n{state['intro']}\n\n"
         f"Final actions:\n{final_actions}\n\n"
-        "Write a ridiculous closing scene."
+        "Write a closing scene."
     )
 
+    # 3) Generate the epilogue text
     response = await gpt_request(
         model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt}
+        ],
         max_tokens=400
     )
     epilogue = response.choices[0].message.content.strip()
 
+    # 4) Send epilogue text into the game thread
     thread_id = state.get("thread_id")
     await send_threaded(app.bot, chat_id, epilogue, thread_id)
     await send_threaded(app.bot, chat_id, "🏁 The campaign ends. Thank you for playing!", thread_id)
 
+    # 5) Auto-generate and send a matching image
+    img_url = await generate_image(
+        "A cinematic, dystopian cyberpunk scene that visually represents this epilogue. Do not include any text in the image itself:\n"
+        f"{epilogue}"
+    )
+    if img_url:
+        await app.bot.send_photo(
+            chat_id=chat_id,
+            photo=img_url,
+            message_thread_id=thread_id,
+            caption="_Illustration of the epilogue_",
+            parse_mode="Markdown"
+        )
+
+    # 6) Mark game over and clean up
     state["game_over"] = True
     await save_state(chat_id, state)
     ACTIVE_GAMES.pop(chat_id, None)
+
 
 # ───────── Slash-command Registration ─────────
 async def set_commands(app: Application):

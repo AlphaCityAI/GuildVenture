@@ -3,6 +3,8 @@ import json
 import asyncio
 import logging
 import time
+import random
+import re
 from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram import InputMediaPhoto
@@ -353,21 +355,21 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
     chat_id = update.effective_chat.id
     state   = await load_state(chat_id)
 
-    # only respond in the topic where /startgame was run
+    # 1) Only in the game’s topic
     thread_id = state.get("thread_id")
     if thread_id and update.effective_message.message_thread_id != thread_id:
         return
 
-    # **ignore anyone who hasn't chosen a faction**
+    # 2) Only registered players
     user_id = str(update.effective_user.id)
     if user_id not in state["players"]:
         return
 
-    user_id = str(update.effective_user.id)
-    text    = update.message.text.strip()
-
+    text = update.message.text.strip()
     if state["game_over"]:
         return
+
+    # 3) Final-turns flow
     if state["final_turns_active"]:
         if user_id in state["final_turns_received"]:
             return await update.message.reply_text("✅ Final action already recorded.")
@@ -378,33 +380,69 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
             await run_epilogue(context.application, chat_id)
         return
 
-    # prune log
+    # 4) Log it
     state["log"].append(f"{update.effective_user.username or update.effective_user.first_name} → {text}")
     state["log"] = state["log"][-20:]
     await save_state(chat_id, state)
 
-    system_msg = {
-        "role": "system",
-        "content": (
-            "You are the deranged Dungeon Master for a grimdark cyberpunk RPG in Alpha City.\n"
-            "- Players are the heroes of this story.\n"
-            "- Describe what happens in response to player actions. Ensure that actions have stakes, e.g., occasionally applying damage, describing failed actions, etc."
-            "Keep responses ≤300 chars, ending with an open-ended choice prompt (e.g., what do you do next?)."
-        )
-    }
-    assistant_msg = {
-        "role": "assistant",
-        "content": state.get("last_narrative", state["intro"])
-    }
-    user_msg = {"role": "user", "content": text}
+    # 5) Detect question
+    is_question = text.endswith("?") or bool(re.match(r"^(who|what|where|when|why|how)\b", text.lower()))
 
+    if is_question:
+        # Pure question → no roll
+        system_msg = {
+            "role": "system",
+            "content": (
+                "You are the deranged Dungeon Master for a grimdark cyberpunk RPG in Alpha City.\n"
+                "- Answer player questions or describe the scene neutrally.\n"
+                "Keep responses ≤300 chars."
+            )
+        }
+        messages = [
+            system_msg,
+            {"role": "assistant", "content": state.get("last_narrative", state["intro"])},
+            {"role": "user",      "content": text}
+        ]
+    else:
+        # Action → roll a d20
+        roll = random.randint(1, 20)
+        if roll <= 3:
+            outcome = "horrifying failure"
+        elif roll <= 9:
+            outcome = "moderate failure"
+        elif roll <= 17:
+            outcome = "moderate success"
+        else:
+            outcome = "victorious triumph"
+
+        system_msg = {
+            "role": "system",
+            "content": (
+                "You are the deranged Dungeon Master for a grimdark cyberpunk RPG in Alpha City.\n"
+                "- Rolls: 1–3 horrifying failure; 4–9 moderate failure; 10–17 moderate success; 18–20 victorious triumph.\n"
+                "Keep responses ≤300 chars and end with an open prompt."
+            )
+        }
+        user_content = (
+            f"Player action: “{text}”\n"
+            f"Roll: {roll} ({outcome}).\n"
+            "Describe what happens next."
+        )
+        messages = [
+            system_msg,
+            {"role": "assistant", "content": state.get("last_narrative", state["intro"])},
+            {"role": "user",      "content": user_content}
+        ]
+
+    # 6) Ask GPT
     response = await gpt_request(
         model="gpt-3.5-turbo",
-        messages=[system_msg, assistant_msg, user_msg],
+        messages=messages,
         max_tokens=300
     )
     narrative = response.choices[0].message.content.strip()
 
+    # 7) Persist and reply
     state["last_narrative"] = narrative
     await save_state(chat_id, state)
     await update.message.reply_text(narrative)

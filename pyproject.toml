@@ -8,5 +8,6 @@ requires-python = ">=3.11"
 dependencies = [
     "openai>=1.77.0",
     "python-telegram-bot>=22.0",
+    "replit>=4.1.1",
     "telegram>=0.0.1",
 ]

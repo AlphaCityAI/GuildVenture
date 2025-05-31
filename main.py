@@ -526,7 +526,7 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
             )
         }
         user_content = (
-            f"Player action: "{text}"\n"
+            f"Player action: '{text}'\n"
             f"Roll: {roll} ({outcome}).{damage_text}{enemy_attack_text}{death_text}\n"
             "Describe what happens next."
         )

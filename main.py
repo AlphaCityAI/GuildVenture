@@ -5,6 +5,7 @@ import logging
 import time
 import random
 import re
+import base64
 from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram import InputMediaPhoto
@@ -114,14 +115,11 @@ async def generate_image(prompt: str) -> str | None:
         logger.info("Generating image with prompt: %s", prompt)
         # wrap the blocking SDK call in a thread
         resp = await asyncio.to_thread(
-            client.images.generate,            # or client.images.create in older SDKs
+            client.images.generate,
             prompt=prompt,
-            n=1,
-            size="1024x1024",
-            model="dall-e-3",
-            quality="hd"
+            model="gpt-image-1"
         )
-        return resp.data[0].url
+        return resp.data[0].b64_json
     except Exception as e:
         logger.error("Error generating image: %s", e, exc_info=True)
         return None
@@ -178,18 +176,22 @@ async def run_epilogue(app: Application, chat_id: int):
     await send_threaded(app.bot, chat_id, "🏁 The campaign ends. Thank you for playing!", thread_id)
 
     # 5) Auto-generate and send a matching image
-    img_url = await generate_image(
+    img_b64 = await generate_image(
         "A cinematic, dystopian cyberpunk scene that visually represents this epilogue. Do not include any text in the image itself:\n"
         f"{epilogue}"
     )
-    if img_url:
-        await app.bot.send_photo(
-            chat_id=chat_id,
-            photo=img_url,
-            message_thread_id=thread_id,
-            caption="_Illustration of the epilogue_",
-            parse_mode="Markdown"
-        )
+    if img_b64:
+        try:
+            image_bytes = base64.b64decode(img_b64)
+            await app.bot.send_photo(
+                chat_id=chat_id,
+                photo=image_bytes,
+                message_thread_id=thread_id,
+                caption="_Illustration of the epilogue_",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error("Failed to send generated image: %s", e)
 
     # 6) Mark game over and clean up
     state["game_over"] = True

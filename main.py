@@ -1,3 +1,4 @@
+
 import os
 import json
 import asyncio
@@ -18,6 +19,7 @@ from telegram.ext import (
     ContextTypes
 )
 from telegram.error import NetworkError
+from replit import db
 
 # ───────── Logging setup ─────────
 logging.basicConfig(
@@ -35,31 +37,16 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ───────── Constants & Globals ─────────
 FACTIONS = {
-    "Glitchborn": {"hp": 24, "description": "A living ghost: stealth and sabotage specialist."},
-    "Nodewalker": {"hp": 22, "description": "Data-mystic: manipulates data streams and digital systems."},
-    "Coinbroker": {"hp": 19, "description": "Underground financier: master of forbidden markets."},
-    "Chainbreaker": {"hp": 28, "description": "Warrior-hero: brute strength and combat prowess."}
+    "Glitchborn": {"hp": 20, "description": "A living ghost: stealth and sabotage specialist."},
+    "Nodewalker": {"hp": 18, "description": "Data-mystic: manipulates data streams and digital systems."},
+    "Coinbroker": {"hp": 16, "description": "Underground financier: master of forbidden markets."},
+    "Chainbreaker": {"hp": 24, "description": "Warrior-hero: brute strength and combat prowess."}
 }
 ENEMY_AC = 12
-ENEMY_HP = 24
-
-STATE_DIR = "game_states"
-os.makedirs(STATE_DIR, exist_ok=True)
+ENEMY_HP = 30
 
 # In-memory guard for one active game per chat
 ACTIVE_GAMES: dict[int, asyncio.Task] = {}
-
-# Per-chat asyncio locks for file I/O
-_STATE_LOCKS: dict[int, asyncio.Lock] = {}
-
-def _get_lock(chat_id: int) -> asyncio.Lock:
-    if chat_id not in _STATE_LOCKS:
-        _STATE_LOCKS[chat_id] = asyncio.Lock()
-    return _STATE_LOCKS[chat_id]
-
-
-def _state_file(chat_id: int) -> str:
-    return os.path.join(STATE_DIR, f"game_state_{chat_id}.json")
 
 # ───────── Helpers ─────────
 async def gpt_request(**kwargs):
@@ -77,37 +64,100 @@ async def send_threaded(bot, chat_id: int, text: str, thread_id: int | None = No
     await bot.send_message(chat_id=chat_id, message_thread_id=thread_id, text=text)
 
 # ───────── State Persistence ─────────
+def get_state_key(chat_id: int) -> str:
+    return f"game_state_{chat_id}"
+
 async def load_state(chat_id: int) -> dict:
-    path = _state_file(chat_id)
-    lock = _get_lock(chat_id)
-    async with lock:
-        if os.path.exists(path):
-            try:
-                with open(path, "r") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error("Failed to load state[%s]: %s", chat_id, e)
-        return {
-            "players": {},
-            "log": [],
-            "enemy_hp": ENEMY_HP,
-            "game_over": False,
-            "final_turns_active": False,
-            "final_turns_received": {},
-            "intro": "",
-            "thread_id": None,
-            "last_narrative": ""
-        }
+    state_key = get_state_key(chat_id)
+    try:
+        state = db.get(state_key)
+        if state:
+            return state
+    except Exception as e:
+        logger.error("Failed to load state[%s]: %s", chat_id, e)
+    
+    return {
+        "players": {},
+        "log": [],
+        "enemy_hp": ENEMY_HP,
+        "game_over": False,
+        "final_turns_active": False,
+        "final_turns_received": {},
+        "intro": "",
+        "thread_id": None,
+        "last_narrative": ""
+    }
 
 async def save_state(chat_id: int, state: dict):
-    path = _state_file(chat_id)
-    lock = _get_lock(chat_id)
-    async with lock:
-        try:
-            with open(path, "w") as f:
-                json.dump(state, f)
-        except Exception as e:
-            logger.error("Failed to save state[%s]: %s", chat_id, e)
+    state_key = get_state_key(chat_id)
+    try:
+        db[state_key] = state
+    except Exception as e:
+        logger.error("Failed to save state[%s]: %s", chat_id, e)
+
+# ───────── Combat & Damage System ─────────
+def calculate_damage(roll: int, is_player: bool = True) -> int:
+    """Calculate damage based on roll and actor type"""
+    if is_player:
+        if roll <= 3:
+            return random.randint(3, 6)  # Player takes significant damage on failure
+        elif roll <= 9:
+            return random.randint(1, 3)  # Minor damage on moderate failure
+        else:
+            return 0  # No damage on success
+    else:
+        # Enemy damage to player
+        if roll >= 15:
+            return random.randint(4, 8)  # High enemy damage
+        elif roll >= 10:
+            return random.randint(2, 4)  # Moderate enemy damage
+        else:
+            return random.randint(0, 2)  # Low enemy damage
+
+def apply_damage_to_enemy(damage: int, state: dict) -> int:
+    """Apply damage to enemy and return actual damage dealt"""
+    actual_damage = min(damage, state["enemy_hp"])
+    state["enemy_hp"] = max(0, state["enemy_hp"] - damage)
+    return actual_damage
+
+def apply_damage_to_player(user_id: str, damage: int, state: dict) -> int:
+    """Apply damage to player and return actual damage dealt"""
+    if user_id not in state["players"]:
+        return 0
+    
+    player = state["players"][user_id]
+    actual_damage = min(damage, player["hp"])
+    player["hp"] = max(0, player["hp"] - damage)
+    return actual_damage
+
+# ───────── Event Generation ─────────
+async def generate_initial_event(faction: str) -> str:
+    """Generate a faction-specific initial event for the player"""
+    faction_events = {
+        "Glitchborn": [
+            "You hear the whir of security drones approaching your position. Red scanning beams slice through the darkness of the maintenance tunnel you're hiding in.",
+            "A corporate security patrol is conducting sweeps two blocks away. You notice their pattern has a 30-second gap near the server farm entrance.",
+            "Your neural implant crackles with an incoming message from an unknown source: 'The Overlords know you're here. Move. Now.'"
+        ],
+        "Nodewalker": [
+            "Your cyberdeck detects a massive data surge in the nearby network hub. Something big is being uploaded... or downloaded.",
+            "A rogue AI fragment has escaped into the local network. It's speaking in fragmented code, begging for help before the Singularity reclaims it.",
+            "The digital ghost of a deceased hacker materializes in your AR display: 'The access codes you need are in my old safehouse... if you can survive the ICE I left behind.'"
+        ],
+        "Coinbroker": [
+            "A desperate Neuralife approaches you, offering stolen corporate crypto keys in exchange for passage out of Alpha City.",
+            "Your underground contact signals an emergency meeting at the old market. They claim to have intelligence about an Overlord financial vulnerability.",
+            "A black market organ dealer has information about Overlord supply chains, but they want payment in untraceable blockchain currency."
+        ],
+        "Chainbreaker": [
+            "Three Corporate enforcers have cornered a group of refugees in the alley ahead. They're preparing to execute them for 'unlawful assembly.'",
+            "An Overlord supply convoy is passing through the industrial district with minimal escort. It's carrying neural implant suppressors.",
+            "A massive combat mech has gone rogue and is terrorizing civilians in the market square. Its corporate handlers are nowhere to be found."
+        ]
+    }
+    
+    events = faction_events.get(faction, faction_events["Glitchborn"])
+    return random.choice(events)
 
 # ───────── Final-Turns & Epilogue ─────────
 async def generate_image(prompt: str) -> str | None:
@@ -175,7 +225,10 @@ async def run_epilogue(app: Application, chat_id: int):
     await send_threaded(app.bot, chat_id, epilogue, thread_id)
     await send_threaded(app.bot, chat_id, "🏁 The campaign ends. Thank you for playing!", thread_id)
 
-    # 5) Auto-generate and send a matching image
+    # 5) Notify that image is being generated
+    await send_threaded(app.bot, chat_id, "🎨 Generating epilogue artwork...", thread_id)
+
+    # 6) Auto-generate and send a matching image
     img_b64 = await generate_image(
         "A textless image that represents the events of this epilogue.\n"
         f"{epilogue}"
@@ -193,7 +246,7 @@ async def run_epilogue(app: Application, chat_id: int):
         except Exception as e:
             logger.error("Failed to send generated image: %s", e)
 
-    # 6) Mark game over and clean up
+    # 7) Mark game over and clean up
     state["game_over"] = True
     await save_state(chat_id, state)
     ACTIVE_GAMES.pop(chat_id, None)
@@ -319,6 +372,15 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
         parse_mode="Markdown"
     )
 
+    # Generate and send initial event for the player
+    initial_event = await generate_initial_event(faction)
+    await send_threaded(
+        context.bot, 
+        chat_id, 
+        f"🎯 **{username}**, as you begin your mission:\n\n{initial_event}\n\nWhat do you do?",
+        thread_id
+    )
+
 async def endgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     state = await load_state(chat_id)
@@ -357,7 +419,7 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
     chat_id = update.effective_chat.id
     state   = await load_state(chat_id)
 
-    # 1) Only in the game’s topic
+    # 1) Only in the game's topic
     thread_id = state.get("thread_id")
     if thread_id and update.effective_message.message_thread_id != thread_id:
         return
@@ -406,28 +468,66 @@ async def handle_player_message(update: Update, context: ContextTypes.DEFAULT_TY
             {"role": "user",      "content": text}
         ]
     else:
-        # Action → roll a d20
+        # Action → roll a d20 with enhanced combat system
         roll = random.randint(1, 20)
+        player = state["players"][user_id]
+        
         if roll <= 3:
             outcome = "horrifying failure"
+            player_damage = calculate_damage(roll, is_player=True)
+            actual_damage = apply_damage_to_player(user_id, player_damage, state)
+            damage_text = f" You take {actual_damage} damage! (HP: {player['hp']}/{FACTIONS[player['faction']]['hp']})" if actual_damage > 0 else ""
         elif roll <= 9:
             outcome = "moderate failure"
+            player_damage = calculate_damage(roll, is_player=True)
+            actual_damage = apply_damage_to_player(user_id, player_damage, state)
+            damage_text = f" You take {actual_damage} damage! (HP: {player['hp']}/{FACTIONS[player['faction']]['hp']})" if actual_damage > 0 else ""
         elif roll <= 17:
             outcome = "moderate success"
+            # Player might deal damage to enemy on success
+            enemy_damage = random.randint(2, 6) if roll >= 12 else 0
+            if enemy_damage > 0:
+                actual_enemy_damage = apply_damage_to_enemy(enemy_damage, state)
+                damage_text = f" You deal {actual_enemy_damage} damage to your foes! (Enemy HP: {state['enemy_hp']}/{ENEMY_HP})"
+            else:
+                damage_text = ""
         else:
             outcome = "victorious triumph"
+            # High damage to enemy on critical success
+            enemy_damage = random.randint(4, 10)
+            actual_enemy_damage = apply_damage_to_enemy(enemy_damage, state)
+            damage_text = f" You deal {actual_enemy_damage} critical damage! (Enemy HP: {state['enemy_hp']}/{ENEMY_HP})"
+
+        # Check for player death
+        death_text = ""
+        if player["hp"] <= 0:
+            death_text = f"\n💀 {player['username']} has fallen in combat!"
+
+        # Enemy counterattack on player failure
+        enemy_attack_text = ""
+        if roll <= 9 and player["hp"] > 0:
+            enemy_roll = random.randint(1, 20)
+            enemy_damage = calculate_damage(enemy_roll, is_player=False)
+            if enemy_damage > 0:
+                actual_enemy_damage = apply_damage_to_player(user_id, enemy_damage, state)
+                enemy_attack_text = f"\nThe enemy counterattacks for {actual_enemy_damage} damage! (HP: {player['hp']}/{FACTIONS[player['faction']]['hp']})"
+                if player["hp"] <= 0:
+                    death_text = f"\n💀 {player['username']} has been killed by the enemy!"
+
+        await save_state(chat_id, state)
 
         system_msg = {
             "role": "system",
             "content": (
                 "You are the deranged Dungeon Master for a grimdark cyberpunk RPG in Alpha City.\n"
                 "- Rolls: 1–3 horrifying failure; 4–9 moderate failure; 10–17 moderate success; 18–20 victorious triumph.\n"
+                "- This is a dangerous world where combat is deadly and survival is challenging.\n"
                 "Keep responses ≤300 chars and end with an open prompt."
             )
         }
         user_content = (
-            f"Player action: “{text}”\n"
-            f"Roll: {roll} ({outcome}).\n"
+            f"Player action: "{text}"\n"
+            f"Roll: {roll} ({outcome}).{damage_text}{enemy_attack_text}{death_text}\n"
             "Describe what happens next."
         )
         messages = [

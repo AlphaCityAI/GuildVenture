@@ -130,34 +130,7 @@ def apply_damage_to_player(user_id: str, damage: int, state: dict) -> int:
     player["hp"] = max(0, player["hp"] - damage)
     return actual_damage
 
-# ───────── Event Generation ─────────
-async def generate_initial_event(faction: str) -> str:
-    """Generate a faction-specific initial event for the player"""
-    faction_events = {
-        "Glitchborn": [
-            "You hear the whir of security drones approaching your position. Red scanning beams slice through the darkness of the maintenance tunnel you're hiding in.",
-            "A corporate security patrol is conducting sweeps two blocks away. You notice their pattern has a 30-second gap near the server farm entrance.",
-            "Your neural implant crackles with an incoming message from an unknown source: 'The Overlords know you're here. Move. Now.'"
-        ],
-        "Nodewalker": [
-            "Your cyberdeck detects a massive data surge in the nearby network hub. Something big is being uploaded... or downloaded.",
-            "A rogue AI fragment has escaped into the local network. It's speaking in fragmented code, begging for help before the Singularity reclaims it.",
-            "The digital ghost of a deceased hacker materializes in your AR display: 'The access codes you need are in my old safehouse... if you can survive the ICE I left behind.'"
-        ],
-        "Coinbroker": [
-            "A desperate Neuralife approaches you, offering stolen corporate crypto keys in exchange for passage out of Alpha City.",
-            "Your underground contact signals an emergency meeting at the old market. They claim to have intelligence about an Overlord financial vulnerability.",
-            "A black market organ dealer has information about Overlord supply chains, but they want payment in untraceable blockchain currency."
-        ],
-        "Chainbreaker": [
-            "Three Corporate enforcers have cornered a group of refugees in the alley ahead. They're preparing to execute them for 'unlawful assembly.'",
-            "An Overlord supply convoy is passing through the industrial district with minimal escort. It's carrying neural implant suppressors.",
-            "A massive combat mech has gone rogue and is terrorizing civilians in the market square. Its corporate handlers are nowhere to be found."
-        ]
-    }
-    
-    events = faction_events.get(faction, faction_events["Glitchborn"])
-    return random.choice(events)
+
 
 # ───────── Final-Turns & Epilogue ─────────
 async def generate_image(prompt: str) -> str | None:
@@ -190,6 +163,10 @@ async def run_epilogue(app: Application, chat_id: int):
     state = await load_state(chat_id)
     if state["game_over"]:
         return
+    
+    # Prevent duplicate epilogue runs
+    state["game_over"] = True
+    await save_state(chat_id, state)
 
     # 1) Collate final player actions
     final_actions = "\n".join(
@@ -246,9 +223,7 @@ async def run_epilogue(app: Application, chat_id: int):
         except Exception as e:
             logger.error("Failed to send generated image: %s", e)
 
-    # 7) Mark game over and clean up
-    state["game_over"] = True
-    await save_state(chat_id, state)
+    # 7) Clean up
     ACTIVE_GAMES.pop(chat_id, None)
 
 
@@ -372,12 +347,11 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
         parse_mode="Markdown"
     )
 
-    # Generate and send initial event for the player
-    initial_event = await generate_initial_event(faction)
+    # Send simple next move prompt
     await send_threaded(
         context.bot, 
         chat_id, 
-        f"🎯 **{username}**, as you begin your mission:\n\n{initial_event}\n\nWhat do you do?",
+        f"🎯 **{username}**, you've chosen your faction, now choose your next move!",
         thread_id
     )
 

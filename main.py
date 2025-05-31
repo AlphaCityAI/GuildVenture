@@ -177,7 +177,7 @@ async def run_epilogue(app: Application, chat_id: int):
 
     # 5) Auto-generate and send a matching image
     img_b64 = await generate_image(
-        "A cinematic, dystopian cyberpunk scene that visually represents this epilogue. Do not include any text in the image itself:\n"
+        "A textless image that represents the events of this epilogue.\n"
         f"{epilogue}"
     )
     if img_b64:

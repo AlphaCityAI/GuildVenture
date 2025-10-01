@@ -953,6 +953,7 @@ dependencies = [
     { name = "openai" },
     { name = "python-telegram-bot" },
     { name = "replit" },
+    { name = "requests" },
     { name = "telegram" },
 ]
 
@@ -961,6 +962,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.77.0" },
     { name = "python-telegram-bot", specifier = ">=22.0" },
     { name = "replit", specifier = ">=4.1.1" },
+    { name = "requests", specifier = ">=2.32.3" },
     { name = "telegram", specifier = ">=0.0.1" },
 ]
 

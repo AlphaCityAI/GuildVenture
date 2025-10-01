@@ -9,5 +9,6 @@ dependencies = [
     "openai>=1.77.0",
     "python-telegram-bot>=22.0",
     "replit>=4.1.1",
+    "requests>=2.32.3",
     "telegram>=0.0.1",
 ]

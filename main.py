@@ -7,6 +7,7 @@ import random
 import re
 import base64
 import requests
+import signal
 from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -101,23 +102,31 @@ async def gpt_request(**kwargs):
     raise RuntimeError("GPT calls failed after 3 retries")
 
 async def generate_image(prompt: str) -> str | None:
-    """Generates an image using dall-e-3 and returns the base64 JSON, handling URL fallbacks."""
+    """Generates an image using gpt-image-1 and returns the base64 JSON, handling URL fallbacks."""
     enhanced_prompt = f"Hand-painted art style, cinematic still photo of: {prompt}. Textless, no words, no letters, no typography, purely visual."
     try:
         logger.info("Generating image with prompt: %s", enhanced_prompt)
 
         def _generate_and_fetch():
             resp = client.images.generate(
-                model="dall-e-3",
+                model="gpt-image-1",
                 prompt=enhanced_prompt,
                 n=1,
                 size="1024x1024",
-                quality="standard",
-                response_format="b64_json"
+                quality="medium"
             )
-            if not resp.data or not resp.data[0] or not resp.data[0].b64_json:
-                 raise Exception("No b64_json in OpenAI image response")
-            return resp.data[0].b64_json
+            if not resp.data or not resp.data[0]:
+                raise Exception("No data in OpenAI image response")
+            image_data = resp.data[0]
+            if image_data.b64_json:
+                return image_data.b64_json
+            elif image_data.url:
+                img_resp = requests.get(image_data.url, timeout=30)
+                img_resp.raise_for_status()
+                image_bytes = img_resp.content
+                return base64.b64encode(image_bytes).decode('utf-8')
+            else:
+                raise Exception("No image data (b64_json or url) in response")
         return await asyncio.to_thread(_generate_and_fetch)
     except Exception as e:
         logger.error("Error generating image: %s", e, exc_info=True)
@@ -185,7 +194,7 @@ async def reset_game_state(chat_id: int, thread_id: int | None):
         "dead_players": [], "turn_index": 0,
         "owner_id": None, "level": 0, "narrative_log": [], "objective": None,
         "actions_remaining": ACTIONS_PER_LEVEL, "hack_cooldowns": {},
-        "boss": None
+        "boss": None, "active_roll_bonuses": {}
     }
     await save_state(chat_id, initial_state)
     return initial_state
@@ -199,7 +208,6 @@ async def inactivity_ender(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             await send_message(context, chat_id, "⌛ The simulation is becoming unstable due to inactivity. Action required in 20 seconds or the session will collapse.")
         await asyncio.sleep(20)
         final_state = await load_state(chat_id)
-        # Check if state is still the same, indicating no activity
         if final_state.get("turn_index") == state.get("turn_index") and final_state.get("narrative_log") == state.get("narrative_log"):
             logger.info("Inactivity timeout reached for chat %d. Ending game.", chat_id)
             await send_message(context, chat_id, "🛑 The connection was lost. The simulation has collapsed due to inactivity.")
@@ -238,6 +246,9 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     state = await load_state(chat_id)
 
+    if update.effective_message.message_thread_id != state.get("thread_id"):
+        return
+
     if state.get("game_stage") != "faction_select":
         return await update.message.reply_text("There is no active campaign to join right now. Use /venture to start one.")
 
@@ -247,9 +258,6 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if any(p['id'] == user.id for p in state.get("dead_players", [])):
         return await update.message.reply_text("You have fallen in this campaign. You cannot rejoin until the next one.")
 
-    # Add player and prompt for faction
-    # We can add a temporary placeholder until they select a faction.
-    # For now, let's just prompt them.
     await update.message.reply_text(f"{user.first_name} wants to join the fight! Please choose your faction from the menu above.")
 
 
@@ -257,6 +265,10 @@ async def endgame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     state = await load_state(chat_id)
+
+    if update.effective_message.message_thread_id != state.get("thread_id"):
+        return
+
     if state.get("owner_id") != user_id:
         return await update.message.reply_text("Only the game owner can end the adventure.")
     thread_id = update.effective_message.message_thread_id
@@ -266,16 +278,20 @@ async def endgame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     chat_id = query.message.chat.id
+    state = await load_state(chat_id)
+
+    if query.message.message_thread_id != state.get("thread_id"):
+        return await query.answer()
+
+    await query.answer()
     action = query.data.split(":")[1]
 
     if action in ["speed_mission", "boss_fight", "open_campaign"]:
-        state = await load_state(chat_id)
         state["game_stage"] = "faction_select"
         state["owner_id"] = query.from_user.id
         state["game_mode"] = action
-        state["players"] = [] # Reset players for new game
+        state["players"] = [] 
         await save_state(chat_id, state)
         keyboard = [[InlineKeyboardButton(f, callback_data=f"faction:{f}")] for f in FACTIONS]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -296,7 +312,7 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         prompt = (f"You are a generator for a cyberpunk RPG based on this lore:\n{LORE_SUMMARY}\n"
                   f"Generate an item with these traits:\n- Rarity: '{rarity}'\n- Slot: '{slot}'\n- Specialty: '{specialty}'\n"
                   f"The item's name and background must fit the lore. Provide a JSON object with 'name' and 'background' (max 300 chars).")
-    else:  # character
+    else:
         ally_faction = random.choice(ALL_FACTIONS_LIST)
         prompt = (f"You are a generator for a cyberpunk RPG based on this lore:\n{LORE_SUMMARY}\n"
                   f"Generate a character from the '{ally_faction}' faction. Their name MUST NOT be '{rarity}'.\n- Rarity Tier: '{rarity}' (This should influence their background)\n"
@@ -320,7 +336,7 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
                    f"{rarity_icon} *Rarity*: {rarity}\n"
                    f"🛠️ *Durability*: {durability}/10\n\n"
                    f"_{background}_")
-    else: # character
+    else: 
         ally_faction = random.choice(ALL_FACTIONS_LIST) 
         faction_icon = "🔴" if ally_faction in ["Overlord", "Singularity", "Neuralife"] else "🟢"
         image_prompt = f"A futuristic, grimdark cyberpunk character from the {ally_faction} faction: {name}. {background}."
@@ -345,6 +361,9 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
     user = query.from_user
     state = await load_state(chat_id)
 
+    if query.message.message_thread_id != state.get("thread_id"):
+        return await query.answer()
+
     if state.get("game_stage") != "faction_select":
         return await query.answer("Faction selection is not active.", show_alert=True)
 
@@ -355,6 +374,7 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
     faction_name = query.data.split(":", 1)[1]
     faction_data = FACTIONS[faction_name]
     player_hp = faction_data["hp"]
+    player_abilities = [json.loads(json.dumps(ability)) for ability in ABILITIES.get(faction_name, [])]
 
     new_player = {
         "id": user.id,
@@ -364,13 +384,12 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
         "max_hp": player_hp,
         "modifier_type": faction_data["modifier_type"],
         "modifier_value": faction_data["modifier_value"],
-        "abilities": [ability.copy() for ability in ABILITIES.get(faction_name, [])] # Add abilities
+        "abilities": player_abilities
     }
     state["players"].append(new_player)
 
     await send_message(context, chat_id, f"{user.first_name} has joined as a {faction_name}!")
 
-    # If this is the first player, the game can start.
     if len(state["players"]) == 1:
         game_mode = state.get("game_mode", "speed_mission")
         if game_mode == "speed_mission":
@@ -385,16 +404,15 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
             await query.edit_message_text("Generating your open world...")
             await start_level(context, chat_id, state)
     else:
-        await save_state(chat_id, state) # Save state for newly joined player
+        await save_state(chat_id, state)
 
 async def pre_boss_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = query.message.chat.id
     state = await load_state(chat_id)
 
-    # In multiplayer, any player can make this choice
-    # You might want to implement a voting system later.
-    # For now, first come, first served.
+    if query.message.message_thread_id != state.get("thread_id"):
+        return await query.answer()
 
     await query.answer()
     action = query.data.split(":")[1]
@@ -416,6 +434,9 @@ async def post_reward_menu_callback(update: Update, context: ContextTypes.DEFAUL
     chat_id = query.message.chat.id
     state = await load_state(chat_id)
 
+    if query.message.message_thread_id != state.get("thread_id"):
+        return await query.answer()
+
     await query.answer()
     action = query.data.split(":")[1]
     if action == "continue":
@@ -435,7 +456,73 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
 
     turn_index = state.get("turn_index", 0)
     current_player = players[turn_index]
+
+    if player_action.startswith("[ABILITY]:"):
+        ability_name = player_action.split(":", 1)[1]
+        ability_data = next((a for a in current_player.get("abilities", []) if a['name'] == ability_name), None)
+
+        if not ability_data:
+            await send_message(context, chat_id, "Error: Ability not found.")
+            return
+
+        effect = ability_data['effect']
+        narrative = f"{current_player['username']} uses *{ability_name}*!\n_{ability_data['description']}_"
+
+        if effect['type'] == 'direct_damage':
+            if state.get("boss"):
+                state['boss']['hp'] -= effect['value']
+                narrative += f"\n\nIt deals *{effect['value']} damage* to {state['boss']['name']}! (HP: {state['boss']['hp']}/{state['boss']['max_hp']})"
+            else:
+                narrative += "\n\nThere's no primary target, but the raw power echoes through the network."
+
+        elif effect['type'] == 'heal':
+            target_players = [current_player] if effect['target'] == 'self' else players
+            for p in target_players:
+                p['hp'] = min(p['max_hp'], p['hp'] + effect['value'])
+
+            if effect['target'] == 'self':
+                 narrative += f"\n\n{current_player['username']} recovers *{effect['value']} HP*! (Now {current_player['hp']}/{current_player['max_hp']})"
+            else:
+                 narrative += f"\n\nThe whole party recovers *{effect['value']} HP*!"
+
+        elif effect['type'] == 'roll_bonus':
+            state.setdefault("active_roll_bonuses", {})
+            target_id = 'boss' if effect['target'] == 'enemy' else str(current_player['id'])
+            state['active_roll_bonuses'][target_id] = effect['value']
+            narrative += f"\n\nA tactical advantage is secured."
+
+        await send_message(context, chat_id, narrative)
+
+        if state.get("boss") and state['boss']['hp'] <= 0:
+            return await run_epilogue(context, chat_id, state)
+
+        state['turn_index'] = (turn_index + 1) % len(players)
+        await save_state(chat_id, state)
+        await prompt_for_next_action(context, chat_id, state)
+        return
+
     luck_score = random.randint(1, 10)
+    roll_bonus = state.get("active_roll_bonuses", {}).pop(str(current_player['id']), 0)
+
+    location_bonus = 0
+    location_narrative = ""
+    location_effect = state.get("location", {}).get("effect")
+
+    if location_effect:
+        # Standard modifier
+        if location_effect['type'] == 'modifier' and location_effect['category'] == action_category:
+            location_bonus = location_effect['value']
+            location_narrative = location_effect.get('narrative', '')
+
+        # Faction-specific modifier
+        elif location_effect['type'] == 'faction_modifier':
+            # Ensure faction and category are lists for easier checking
+            factions = location_effect['faction'] if isinstance(location_effect['faction'], list) else [location_effect['faction']]
+            categories = location_effect['category'] if isinstance(location_effect['category'], list) else [location_effect['category']]
+
+            if current_player['faction'] in factions and action_category in categories:
+                location_bonus = location_effect['value']
+                location_narrative = location_effect.get('narrative', '')
 
     is_boss_fight = state.get("boss") is not None
     system_prompt_addon = ""
@@ -444,11 +531,12 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
     boss_turn_action = None
     if is_boss_fight:
         boss = state["boss"]
-        # Boss ability check
-        if random.random() < 0.33 and boss.get("abilities"): # 33% chance to use an ability
+        boss_roll_penalty = state.get("active_roll_bonuses", {}).pop('boss', 0)
+
+        if random.random() < 0.33 and boss.get("abilities"): 
             boss_ability = random.choice(boss["abilities"])
             boss_turn_action = f"The boss uses '{boss_ability['name']}'! {boss_ability['description']}"
-            system_prompt_addon += "- A boss is present and uses an ability this turn. The narrative must reflect this. Calculate `player_damage` from the boss's action."
+            system_prompt_addon += f"- A boss is present and uses an ability this turn. The narrative must reflect this. The boss has a {boss_roll_penalty} penalty to its effectiveness this turn."
 
         system_prompt_addon += ("- The player is in a BOSS FIGHT. On success, they must deal `boss_damage`. The `event` should be 'victory' ONLY if the boss is defeated.\n"
                                "- Your JSON response MUST include an integer `boss_damage` field.")
@@ -461,11 +549,11 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
         "Evaluate the player's action. Rules:\n"
         "1. Categorize action into ONE of: 'strength', 'stealth', 'technology', 'communication'.\n"
         "2. Rate action's creativity/effectiveness (0-10) as `skill_score`.\n"
-        "3. A faction specialty bonus (+1) will be added if category matches. `final_score = (skill_score + modifier) * luck_score`.\n"
+        "3. `final_score = (skill_score + modifier + roll_bonus_effect) * luck_score`. Modifier is player's faction bonus.\n"
         "4. Narrative must fit the lore. CRITICAL: If `final_score` <= 50, it MUST be a complete failure with NO progress.\n"
         "5. CRITICAL: On failure (score <= 50), `player_damage` must be at least 1 for the current player. Explain the damage source.\n"
         f"{system_prompt_addon}"
-        "6. Respond ONLY with a JSON object: {'action_category': str, 'skill_score': int, 'narrative': str, 'player_damage': int, 'event': str ('none'|'level_complete'|'victory'), 'boss_damage': int (0 if not a boss fight)}"
+       "6. Respond ONLY with a JSON object: {'action_category': str, 'skill_score': int, 'narrative': str (max 250 chars), 'player_damage': int, 'event': str ('none'|'level_complete'|'victory'), 'boss_damage': int (0 if not a boss fight)}"
     )
     user_prompt = (f"Current Party:\n{players_status}\n"
                    f"Active Player: {current_player['username']} ({current_player['faction']}, {current_player['hp']}/{current_player['max_hp']} HP, Specialty: '{current_player['modifier_type']}').\n"
@@ -474,6 +562,7 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
                    f"Previous Scene: '{state['narrative_log'][-1]}'\n"
                    f"Player Action: '{player_action}'\n"
                    f"Luck Score (d10): {luck_score}\n"
+                   f"Roll Bonus: {roll_bonus}\n"
                    f"{'Boss Action: ' + boss_turn_action if boss_turn_action else ''}\nProvide JSON response.")
 
     try:
@@ -481,7 +570,7 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
         result = json.loads(response.choices[0].message.content)
         skill_score, action_category = result.get('skill_score', 5), result.get('action_category', 'unknown')
         modifier = current_player['modifier_value'] if action_category == current_player['modifier_type'] else 0
-        final_score = (skill_score + modifier) * luck_score
+        final_score = (skill_score + modifier + (roll_bonus / 10) + (location_bonus / 10)) * luck_score
         outcome_tier, narrative, player_damage, event = get_outcome_tier(final_score), result.get('narrative', "The world glitches..."), result.get('player_damage', 0), result.get('event', 'none')
 
         current_player['hp'] -= player_damage
@@ -489,7 +578,11 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
             state['actions_remaining'] -= 1
 
         modifier_text = f" (+{modifier} Faction)" if modifier > 0 else ""
-        full_narrative = f"⚙️ Skill: {skill_score}{modifier_text} | 🎲 Luck: {luck_score} | *Total: {final_score}* ({outcome_tier})\n\n{narrative}"
+        bonus_text = f" ({roll_bonus:+d} Bonus)" if roll_bonus != 0 else ""
+        location_text = f" ({location_bonus:+d} Location)" if location_bonus != 0 else ""
+        full_narrative = f"⚙️ Skill: {skill_score}{modifier_text}{bonus_text}{location_text} | 🎲 Luck: {luck_score} | *Total: {final_score:.1f}* ({outcome_tier})\n\n{narrative}"
+        if location_narrative:
+            full_narrative += f"\n\n_{location_narrative}_"
         if player_damage > 0:
             full_narrative += f"\n\n{current_player['username']} takes *{player_damage} damage*! HP is now {current_player['hp']}/{current_player['max_hp']}."
 
@@ -501,16 +594,20 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
 
         await send_message(context, chat_id, full_narrative)
 
+        if location_effect and location_effect['type'] == 'environmental_hazard' and final_score <= 50:
+            hazard_damage = location_effect.get('damage', 0)
+            current_player['hp'] -= hazard_damage
+            hazard_narrative = location_effect.get('narrative', 'The environment itself turns against you.')
+            await send_message(context, chat_id, f"⚠️ *Environmental Hazard!* ⚠️\n_{hazard_narrative}_\nYou take an additional *{hazard_damage} damage*! HP is now {current_player['hp']}/{current_player['max_hp']}.")
+
         dead_player_this_turn = None
         if current_player['hp'] <= 0:
             await send_message(context, chat_id, f"💀 {current_player['username']} has fallen! The city consumes another soul.")
             dead_player_this_turn = current_player
             state['dead_players'].append(current_player)
             state['players'].pop(turn_index)
-            # Adjust turn index if the dead player was before the next player in the list
             if turn_index >= len(state['players']):
                 state['turn_index'] = 0
-            # No need to change index if players after the dead one shift left.
 
         if not state['players']:
              await send_message(context, chat_id, "All players have fallen. Game over.")
@@ -535,7 +632,7 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
             await prompt_for_next_action(context, chat_id, state)
 
     except (json.JSONDecodeError, Exception) as e:
-        logger.error("Error handling player message: %s", e)
+        logger.error("Error handling player message: %s", e, exc_info=True)
         await send_message(context, chat_id, "A critical error occurred. Please try again.")
 
 
@@ -544,11 +641,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = await load_state(chat_id)
 
-    if state.get("game_stage") not in ["level_1", "level_2"]:
+    if not state.get("game_stage") in ["level_1", "level_2"] or update.effective_message.message_thread_id != state.get("thread_id"):
         return
 
     players = state.get("players", [])
-    if not players: return
+    player_ids = [p['id'] for p in players]
+    if not players or user_id not in player_ids:
+        return
 
     turn_index = state.get("turn_index", 0)
     if user_id != players[turn_index]['id']:
@@ -557,12 +656,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await handle_player_action(update, context, update.message.text.strip())
 
-
 async def ability_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = query.message.chat.id
     user_id = query.from_user.id
     state = await load_state(chat_id)
+
+    if query.message.message_thread_id != state.get("thread_id"):
+        return await query.answer()
 
     players = state.get("players", [])
     if not players: return
@@ -577,19 +678,24 @@ async def ability_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ability_name = query.data.split(":", 1)[1]
 
     ability_used = None
-    for ability in current_player.get("abilities", []):
-        if ability['name'] == ability_name and ability['charges'] > 0:
-            ability['charges'] -= 1
-            ability_used = ability
+    for i, p in enumerate(state['players']):
+        if p['id'] == user_id:
+            for j, ability in enumerate(p.get("abilities", [])):
+                if ability['name'] == ability_name:
+                    if ability['charges'] > 0:
+                        state['players'][i]['abilities'][j]['charges'] -= 1
+                        ability_used = ability
+                    break
             break
 
     if not ability_used:
-        return await query.edit_message_text("Ability not found or out of charges.")
+        await query.edit_message_text(f"Ability '{ability_name}' is out of charges.")
+        await prompt_for_next_action(context, chat_id, state)
+        return
 
-    await save_state(chat_id, state)
     await query.edit_message_text(f"{current_player['username']} uses *{ability_name}*!", parse_mode="Markdown")
+    await save_state(chat_id, state)
 
-    # We'll prepend a special marker to let handle_player_action know this is an ability
     await handle_player_action(update, context, f"[ABILITY]:{ability_name}")
 
 
@@ -598,6 +704,9 @@ async def suggested_action_callback(update: Update, context: ContextTypes.DEFAUL
     chat_id = query.message.chat.id
     user_id = query.from_user.id
     state = await load_state(chat_id)
+
+    if query.message.message_thread_id != state.get("thread_id"):
+        return await query.answer()
 
     players = state.get("players", [])
     if not players: return
@@ -619,9 +728,9 @@ async def start_level(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: d
     if state['level'] > 1:
         prompt = (f"{base_prompt}\nA party of players is continuing their mission against the Overcity. "
                   f"Context from previous scene: {state['narrative_log'][-1]}")
-    else:  # It's the start of a new adventure
+    else:
         location = random.choice(LOCATIONS)
-        state['location'] = location  # Store the location for potential future use
+        state['location'] = location
         prompt = (f"{base_prompt}\nA party of players is starting a new mission against the Overcity. "
                   f"The adventure begins at this location:\n"
                   f"**Location Name:** {location['name']}\n"
@@ -659,11 +768,20 @@ async def prompt_for_next_action(context: ContextTypes.DEFAULT_TYPE, chat_id: in
 
     keyboard = [[InlineKeyboardButton(a, callback_data=f"action:{a.encode('utf-8')[:57].decode('utf-8','ignore')}")] for a in actions]
 
-    # Add ability buttons
     ability_buttons = []
     for ability in current_player.get("abilities", []):
         if ability['charges'] > 0:
-            button_text = f"💥 {ability['name']} ({ability['charges']})"
+            effect = ability['effect']
+            desc = ""
+            if effect['type'] == 'direct_damage':
+                desc = f"Deal {effect['value']} Dmg"
+            elif effect['type'] == 'heal':
+                desc = f"Heal {effect['value']} HP"
+            elif effect['type'] == 'roll_bonus':
+                desc = f"{effect['value']:+d} Roll"
+
+            charges_left = ability['charges']
+            button_text = f"💥 {ability['name']} ({charges_left} left | {desc})"
             ability_buttons.append(InlineKeyboardButton(button_text, callback_data=f"ability:{ability['name']}"))
     if ability_buttons:
         keyboard.append(ability_buttons)
@@ -787,8 +905,6 @@ def main():
     app.add_handler(CommandHandler("venture", venture))
     app.add_handler(CommandHandler("join", join_command))
     app.add_handler(CommandHandler("endgame", endgame_command))
-    # Remove hack command for now as it conflicts with multiplayer
-    # app.add_handler(CommandHandler("hack", hack_command)) 
     app.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main:"))
     app.add_handler(CallbackQueryHandler(faction_selection_callback, pattern="^faction:"))
     app.add_handler(CallbackQueryHandler(pre_boss_menu_callback, pattern="^pre_boss:"))
@@ -798,8 +914,3 @@ def main():
     app.add_handler(CallbackQueryHandler(ability_callback, pattern="^ability:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot polling started")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
-

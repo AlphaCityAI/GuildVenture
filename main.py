@@ -178,9 +178,9 @@ def get_next_turn_index(players_list: List[dict], current_player_id: Optional[in
         # Current player survived, advance turn from their new position
         return (new_index_of_actor + 1) % len(players_list)
     else:
-        # Current player died. The next player is whoever is now at the original index.
-        # This works because the list shifted left.
-        return original_turn_index % len(players_list)
+        # Current player died. Advance from the original index, clamped to new list size.
+        # If original_turn_index >= len(players_list), it wraps around automatically.
+        return original_turn_index % len(players_list) if len(players_list) > 0 else 0
 
 # ───────── Persistence (Game State) ─────────
 def get_state_key(chat_id: int) -> str: return f"game_state_{chat_id}"
@@ -427,7 +427,7 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     state["owner_id"], state["game_mode"], state["players"], state["dead_players"] = user.id, action, [], []
     state["last_action_timestamp"] = datetime.datetime.utcnow().isoformat() # Timestamp the start
     if action == "gauntlet":
-        state["game_stage"], state["gauntlet_level"], state["gauntlet_bonus_attempted"], state["gauntlet_bonus_defeated"] = GameStage.SCOUTING.name, 1, 0, 0
+        state["game_stage"], state["gauntlet_level"], state["gauntlet_bonus_attempted"], state["gauntlet_bonus_defeated"], state["turn_index"] = GameStage.SCOUTING.name, 1, 0, 0, 0
         loading_message = await query.edit_message_text("Scanning the datastream for viable routes...")
         await save_state(chat_id, state)
         await start_scouting(context, chat_id, state)
@@ -907,7 +907,7 @@ async def apply_boss_damage(context: ContextTypes.DEFAULT_TYPE, chat_id: int, st
         if state.get("selected_route") == "adrenal":
             damage = int(damage * 1.5)
 
-        target_players = players if str(target).lower() in ('all', 'players') else [p for p in players if str(p['id']) == str(target)]
+        target_players = players if str(target).lower() in ('all', 'players') else [p for p in players if str(p['id']) == str(target) and p in state.get("players", [])]
         for p in target_players:
             p['hp'] -= damage
             damage_messages.append(f"🩸 *{p['username']}* takes *{damage} damage*!\n{create_bar(p['hp'], p['max_hp'])} {p['hp']}/{p['max_hp']}")
@@ -1090,6 +1090,8 @@ async def gauntlet_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
     if action == "continue":
         state["gauntlet_level"] += 1
         state["game_stage"] = GameStage.SCOUTING.name
+        state["turn_index"] = 0
+        state["location_interaction_used"] = False
         for i, player in enumerate(state["players"]):
             if faction := player.get("faction"): state["players"][i]["abilities"] = [json.loads(json.dumps(a)) for a in ABILITIES.get(faction, [])]
         await query.edit_message_text(f"The challenge intensifies. Re-routing for Floor {state['gauntlet_level']}...")
@@ -1294,7 +1296,10 @@ async def ability_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         ability_used = ability
                     break
             break
-    if not ability_used: return await query.edit_message_text(f"Ability '{ability_name}' is out of charges.") or await prompt_for_next_action(context, chat_id, state)
+    if not ability_used:
+        await query.edit_message_text(f"Ability '{ability_name}' is out of charges.")
+        await prompt_for_next_action(context, chat_id, state)
+        return
 
     state["is_processing_turn"] = True # <-- LOCK
 

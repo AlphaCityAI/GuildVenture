@@ -1,66 +1,141 @@
 ABILITIES = {
-    "Nodewalkers": [
+    "Nodewalker": [
+        {
+            "name": "Ping Attack",
+            "description": "A weak, annoying data ping that deals 3 damage.",
+            "effect": {"type": "direct_damage", "value": 4, "damage_type": "Enertech"}
+        },
         {
             "name": "Data Spike",
-            "description": "Unleash a burst of corrupted data, dealing 5 damage directly to an enemy.",
+            "description": "Inject hostile code to overload enemy nodes, dealing 6 damage.",
             "charges": 2,
-            "effect": {"type": "direct_damage", "value": 5},
-            "target": "enemy"
+            "effect": {"type": "direct_damage", "value": 14, "damage_type": "Enertech"}
         },
         {
             "name": "System Restore",
-            "description": "Purge corrupted code from a friendly system, healing yourself for 8 HP.",
+            "description": "Recompile your own stack and purge junk data, healing yourself for 8 HP.",
             "charges": 1,
-            "effect": {"type": "heal_self", "value": 8},
-            "target": "self"
+            "effect": {"type": "heal", "value": 8}
         }
     ],
-    "Coinbrokers": [
+
+    "Coinbroker": [
         {
-            "name": "Insider Trading",
-            "description": "Use black market intel to predict enemy movements, granting your party a +15 bonus to their next roll.",
+            "name": "Market Fluctuation",
+            "description": "Exploit a minor market opening to cause a distraction, dealing 2 damage.",
+            "effect": {"type": "direct_damage", "value": 4, "damage_type": "Mercantile"}
+        },
+        {
+            "name": "Hostile Liquidation",
+            "description": "Force an asset sell-off, dealing 7 economic shock damage.",
             "charges": 2,
-            "effect": {"type": "roll_bonus", "value": 15},
-            "target": "party"
+            "effect": {"type": "direct_damage", "value": 13, "damage_type": "Mercantile"}
         },
         {
             "name": "Bailout",
-            "description": "Inject a surge of capital, healing all party members for 4 HP.",
-            "charges": 1,
-            "effect": {"type": "heal_party", "value": 4},
-            "target": "party"
+            "description": "Liquidate emergency funds to stabilize the squad, healing all party members for 4 HP.",
+            "charges": 2,
+            "effect": {"type": "heal", "value": 5, "target": "party"}
         }
     ],
+
     "Glitchborn": [
         {
-            "name": "Ambush",
-            "description": "Exploit a system vulnerability to strike from the shadows, dealing 7 damage.",
-            "charges": 2,
-            "effect": {"type": "direct_damage", "value": 7},
-            "target": "enemy"
+            "name": "Flicker Strike",
+            "description": "A quick, disorienting jab from the shadows, dealing 4 damage.",
+            "effect": {"type": "direct_damage", "value": 5, "damage_type": "Umbral"}
         },
         {
-            "name": "Phase Shift",
-            "description": "Become momentarily intangible, guaranteeing a successful escape or dodge on your next action.",
+            "name": "Ambush",
+            "description": "Step from blind data-zones and strike, dealing 7 damage.",
+            "charges": 3,
+            "effect": {"type": "direct_damage", "value": 10, "damage_type": "Umbral"}
+        },
+        {
+            "name": "Unmake",
+            "description": "Briefly de-rez a target's core code, dealing 9 umbral damage.",
             "charges": 1,
-            "effect": {"type": "guaranteed_success", "category": "stealth"},
-            "target": "self"
+            "effect": {"type": "direct_damage", "value": 9, "damage_type": "Umbral"}
         }
     ],
-    "Chainbreakers": [
+
+    "Chainbreaker": [
+        {
+            "name": "Scrap Punch",
+            "description": "A heavy blow with augmented knuckles, dealing 5 damage.",
+            "effect": {"type": "direct_damage", "value": 6, "damage_type": "Kinetic"}
+        },
         {
             "name": "Overcharge",
-            "description": "Divert power to your augments for a devastating blow, dealing 8 damage.",
+            "description": "Route raw current through combat mods for a brutal hit, dealing 8 damage.",
             "charges": 2,
-            "effect": {"type": "direct_damage", "value": 8},
-            "target": "enemy"
+            "effect": {"type": "direct_damage", "value": 15, "damage_type": "Kinetic"}
         },
         {
             "name": "Adrenaline Surge",
-            "description": "Trigger your combat stimulants, healing yourself for 10 HP.",
+            "description": "Trigger combat stims and reinforce plating, healing yourself for 10 HP.",
             "charges": 1,
-            "effect": {"type": "heal_self", "value": 10},
-            "target": "self"
+            "effect": {"type": "heal", "value": 6}
+        }
+    ],
+
+    "Singularity": [
+        {
+            "name": "Process Query",
+            "description": "Run a low-level diagnostic attack, dealing 3 damage.",
+            "effect": {"type": "direct_damage", "value": 5, "damage_type": "Mechanical"}
+        },
+        {
+            "name": "Logic Bomb",
+            "description": "Recursive payload detonates inside target heuristics, dealing 6 damage.",
+            "charges": 2,
+            "effect": {"type": "direct_damage", "value": 12, "damage_type": "Mechanical"}
+        },
+        {
+            "name": "Recursive Deletion",
+            "description": "Flag a target for total data erasure, dealing 8 technology damage.",
+            "charges": 2,
+            "effect": {"type": "direct_damage", "value": 6, "damage_type": "Mechanical"}
+        }
+    ],
+
+    "Overlord": [
+        {
+            "name": "Asset Forfeiture",
+            "description": "A minor, legally-backed seizure of processing power, dealing 2 damage.",
+            "effect": {"type": "direct_damage", "value": 3, "damage_type": "Archon"}
+        },
+        {
+            "name": "Sanction Strike",
+            "description": "Call in a targeted orbital strike, dealing 6 kinetic damage.",
+            "charges": 2,
+            "effect": {"type": "direct_damage", "value": 8, "damage_type": "Archon"}
+        },
+        {
+            "name": "Private Security",
+            "description": "Activate a personal shield and med-kit, healing for 8 HP.",
+            "charges": 2,
+            "effect": {"type": "heal", "value": 12}
+        }
+    ],
+
+    "Neuralife": [
+        {
+            "name": "Frantic Headbutt",
+            "description": "An uncontrolled, desperate physical strike, dealing 3 damage.",
+            "effect": {"type": "direct_damage", "value": 3, "damage_type": "Neural"}
+        },
+        {
+            "name": "Ghost in the Machine",
+            "description": "Hijack implant drift and strike from noise, dealing 6 damage.",
+            "charges": 3,
+            "effect": {"type": "direct_damage", "value": 8, "damage_type": "Neural"}
+        },
+        {
+            "name": "Synaptic Overload",
+            "description": "Flood the target's neural link with raw data, dealing 8 neural damage.",
+            "charges": 3,
+            "effect": {"type": "direct_damage", "value": 7, "damage_type": "Neural"}
         }
     ]
 }

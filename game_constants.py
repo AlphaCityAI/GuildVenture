@@ -78,9 +78,8 @@ def faction_icon(name: str) -> str:
 ITEM_SLOTS = ["Cranial", "Chassis", "Equipment", "Mobility", "Companion"]
 ITEM_SPECIALTIES = ["Umbral", "Blockchain", "Kinetic", "Enertech", "Archon", "Neural", "Mechanical"]
 
-# Run bonus tuning
-RUN_BONUS_ATTEMPT, RUN_BONUS_DEFEAT, RUN_BONUS_CAP = 5, 10, 60
-PITY_THRESHOLD, PITY_BONUS = 5, 10
+# Run bonus tuning (unified: +1 per attempt, +1 per defeat, capped at 60)
+RUN_BONUS_CAP = 60
 
 # Scouting routes & global hazards
 GAUNTLET_ROUTES = {

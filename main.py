@@ -153,14 +153,11 @@ def adjust_boss_damage_for_traits(raw_damage: int, state: dict, attacker: dict, 
 
 def compute_run_bonus(state: dict):
     attempted, defeated = int(state.get("gauntlet_bonus_attempted", 0)), int(state.get("gauntlet_bonus_defeated", 0))
-    pity_counter = int(state.get("pity_counter", 0))
-    pity_bonus = PITY_BONUS if pity_counter >= PITY_THRESHOLD else 0
-    bonus = (attempted * RUN_BONUS_ATTEMPT) + (defeated * RUN_BONUS_DEFEAT) + pity_bonus
-    return min(bonus, RUN_BONUS_CAP), attempted, defeated, pity_bonus
+    bonus = attempted + defeated
+    return min(bonus, 60), attempted, defeated
 
 def apply_pity_after_rarity(state: dict, rarity: str):
-    is_rare = rarity in ("Black Market", "Node-Forged", "Peerless")
-    state["pity_counter"] = 0 if is_rare else int(state.get("pity_counter", 0)) + 1
+    pass
 
 def get_next_turn_index(players_list: List[dict], current_player_id: Optional[int], original_turn_index: int) -> int:
     """
@@ -290,7 +287,7 @@ async def award_xp(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id: 
 
 # ───────── Game State Management ─────────
 async def reset_game_state(chat_id: int, thread_id: Optional[int]):
-    init = {"game_stage": GameStage.MAIN_MENU.name, "thread_id": thread_id, "players": [], "dead_players": [], "turn_index": 0, "owner_id": None, "narrative_log": [], "objective": None, "boss": None, "active_roll_bonuses": {}, "guaranteed_success": {}, "gauntlet_bonus_attempted": 0, "gauntlet_bonus_defeated": 0, "pity_counter": 0, "scout": None, "selected_route": None, "hazard_effect": None, "gauntlet_level": 0, "game_mode": None, "location": None, "location_interaction_used": False, "last_action_timestamp": datetime.datetime.utcnow().isoformat()}
+    init = {"game_stage": GameStage.MAIN_MENU.name, "thread_id": thread_id, "players": [], "dead_players": [], "turn_index": 0, "owner_id": None, "narrative_log": [], "objective": None, "boss": None, "active_roll_bonuses": {}, "guaranteed_success": {}, "gauntlet_bonus_attempted": 0, "gauntlet_bonus_defeated": 0, "scout": None, "selected_route": None, "hazard_effect": None, "gauntlet_level": 0, "game_mode": None, "location": None, "location_interaction_used": False, "last_action_timestamp": datetime.datetime.utcnow().isoformat()}
     await save_state(chat_id, init)
     return init
 
@@ -693,22 +690,17 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
 
     try:
         base_roll = random.randint(min_roll, 100)
-        run_bonus, a, d, pity = compute_run_bonus(state)
+        run_bonus, a, d = compute_run_bonus(state)
 
-        # Apply bonuses additively (not multiplicatively) to prevent exponential growth
-        # Gauntlet bonus: +5 per floor (max 5 * 20 = 100, but capped at final roll 95)
-        # Run bonus: direct percentage points added (capped at 60)
-        gauntlet_bonus_points = max(0, state.get("gauntlet_level", 1) * 5 - 5)
-        final_roll = min(95, base_roll + gauntlet_bonus_points + run_bonus)
+        # Apply bonus: +1 per attempt, +1 per defeat (simple unified system, capped at 60)
+        final_roll = min(95, base_roll + run_bonus)
 
         rarity, rarity_icon, level = get_rarity_and_level(final_roll)
 
-        # Update breakdown string to reflect additive logic
+        # Update breakdown string
         breakdown = f"Roll: {base_roll}"
-        if gauntlet_bonus_points > 0:
-            breakdown += f" +{gauntlet_bonus_points} (gauntlet floor)"
         if run_bonus > 0:
-            breakdown += f" +{run_bonus} (run bonus)"
+            breakdown += f" +{run_bonus} (from {a} attempt(s), {d} defeat(s))"
         breakdown += f" = *{final_roll}* → *{rarity}*"
 
         await send_message(context, chat_id, thread_id, f"🧪 {breakdown}")
@@ -1262,8 +1254,8 @@ async def start_gauntlet_floor(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
     caption = f"*Gauntlet Floor {floor}*\n📍 *{location['name']}*\n*Objective:* {state['objective']}\n\n{state['boss']['description']}\n\n_Global hazard active: {hazard['label']}_"
     if b64: await context.bot.send_photo(chat_id=chat_id, photo=base64.b64decode(b64), caption=caption, message_thread_id=thread_id, parse_mode="Markdown")
     else: await send_message(context, chat_id, thread_id, caption)
-    b, a, d, pity = compute_run_bonus(state)
-    bonus_text = f"Run Bonus updated: *+{b}%* (Attempted {a}, Defeated {d}{', Pity +10%' if pity else ''})."
+    b, a, d = compute_run_bonus(state)
+    bonus_text = f"Run Bonus: *+{b}* (Attempted {a}, Defeated {d})."
     await send_message(context, chat_id, thread_id, f"{bonus_text}\n\n*{state['boss']['name']}*\n{create_bar(state['boss']['hp'], state['boss']['max_hp'])} {state['boss']['hp']}/{state['boss']['max_hp']}")
     await prompt_for_next_action(context, chat_id, state)
 
@@ -1307,8 +1299,8 @@ async def trigger_gauntlet_choice_menu(context: ContextTypes.DEFAULT_TYPE, chat_
     floor, bonus = state.get("gauntlet_level", 1), state.get("gauntlet_level", 1) * 10
     thread_id = state.get("thread_id")
     await send_message(context, chat_id, thread_id, f"You have defeated Gauntlet floor {floor}!")
-    b, a, d, pity = compute_run_bonus(state)
-    await send_message(context, chat_id, thread_id, f"Run Bonus: *+{b}%* (Attempted {a}, Defeated {d}{', Pity +10%' if pity else ''}).")
+    b, a, d = compute_run_bonus(state)
+    await send_message(context, chat_id, thread_id, f"Run Bonus: *+{b}* (Attempted {a}, Defeated {d}).")
     # Pass the calculated bonus in the callback data
     keyboard = [[InlineKeyboardButton(f"🚀 Ascend (Floor {floor + 1})", callback_data="gauntlet:continue")], [InlineKeyboardButton(f"💰 Bank Reward (+{bonus}% rarity)", callback_data=f"gauntlet:end:{bonus}")]]
     await send_message(context, chat_id, thread_id, "Ascend for bigger odds or bank now?", reply_markup=InlineKeyboardMarkup(keyboard))

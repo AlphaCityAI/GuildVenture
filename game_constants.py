@@ -127,6 +127,7 @@ INFO_COMMAND_TEXT = """
     - `/venture`: Start a new game session.
     - `/join`: Join an active game during faction selection.
     - `/profile`: View your character's stats and progress.
+    - `/inventory`: View and equip items. Equipped items grant passive damage bonuses and active abilities.
     - `/leaderboard`: See the top players in Alpha City.
     - `/info`: Display this information guide.
     - `/endgame`: (Game owner only) Forcibly end the current adventure.

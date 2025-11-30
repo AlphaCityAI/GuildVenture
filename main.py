@@ -29,6 +29,7 @@ from abilities import ABILITIES
 from bosstraits import BOSS_TRAITS
 from game_constants import *
 import prompts
+import item_traits
 
 # ───────── Logging setup ─────────
 logging.basicConfig(
@@ -227,12 +228,24 @@ async def get_or_create_profile(user_id: int, username: str) -> dict:
             "xp_to_next_level": int(XP_BASE * (XP_MULTIPLIER ** 1)),
             "title": TITLES[0],
             "stats": {"bosses_attempted": 0, "bosses_defeated": 0, "highest_floor": 0, "moves_made": 0},
-            "last_login_date": "1970-01-01"
+            "last_login_date": "1970-01-01",
+            "inventory": [],
+            "equipped_items": {"Cranial": None, "Chassis": None, "Equipment": None, "Mobility": None, "Companion": None}
         }
         await save_profile(user_id, profile)
     # Ensure username is up-to-date
     if profile.get("username") != username:
         profile["username"] = username
+        await save_profile(user_id, profile)
+    # Migrate old profiles that don't have inventory/equipped_items
+    needs_save = False
+    if "inventory" not in profile:
+        profile["inventory"] = []
+        needs_save = True
+    if "equipped_items" not in profile:
+        profile["equipped_items"] = {"Cranial": None, "Chassis": None, "Equipment": None, "Mobility": None, "Companion": None}
+        needs_save = True
+    if needs_save:
         await save_profile(user_id, profile)
     return profile
 
@@ -381,6 +394,176 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  - Campaign Actions: {profile['stats']['moves_made']}"
     )
     await update.message.reply_text(message, parse_mode="Markdown")
+
+async def inventory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display inventory and equipped items with management options."""
+    user = update.effective_user
+    profile = await get_or_create_profile(user.id, user.first_name)
+    
+    equipped = profile.get("equipped_items", {})
+    inventory = profile.get("inventory", [])
+    
+    lines = ["🎒 *Your Inventory*\n"]
+    lines.append("*Equipped Items:*")
+    
+    for slot in item_traits.ITEM_SLOTS:
+        slot_icon = item_traits.get_slot_icon(slot)
+        item = equipped.get(slot)
+        if item:
+            rarity_icon = item_traits.RARITY_ICONS.get(item.get("rarity", ""), "")
+            lines.append(f"  {slot_icon} {slot}: {rarity_icon} {item.get('name', 'Unknown')}")
+        else:
+            lines.append(f"  {slot_icon} {slot}: _Empty_")
+    
+    lines.append(f"\n*Backpack* ({len(inventory)} items):")
+    if not inventory:
+        lines.append("  _Your backpack is empty._")
+    
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    
+    if inventory:
+        keyboard = []
+        for i, item in enumerate(inventory[:10]):
+            rarity_icon = item_traits.RARITY_ICONS.get(item.get("rarity", ""), "")
+            slot_icon = item_traits.get_slot_icon(item.get("slot", ""))
+            keyboard.append([InlineKeyboardButton(
+                f"{rarity_icon} {item.get('name', 'Unknown')} ({slot_icon} {item.get('slot', '')})",
+                callback_data=f"inv:view:{i}"
+            )])
+        if len(inventory) > 10:
+            keyboard.append([InlineKeyboardButton("📜 Show More...", callback_data="inv:more:10")])
+        await update.message.reply_text("Select an item to manage:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    if any(equipped.get(slot) for slot in item_traits.ITEM_SLOTS):
+        keyboard = []
+        for slot in item_traits.ITEM_SLOTS:
+            if equipped.get(slot):
+                slot_icon = item_traits.get_slot_icon(slot)
+                keyboard.append([InlineKeyboardButton(f"Unequip {slot_icon} {slot}", callback_data=f"inv:unequip:{slot}")])
+        if keyboard:
+            await update.message.reply_text("Or unequip an item:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def inventory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inventory button callbacks."""
+    query = update.callback_query
+    user = query.from_user
+    await query.answer()
+    
+    profile = await get_or_create_profile(user.id, user.first_name)
+    inventory = profile.get("inventory", [])
+    equipped = profile.get("equipped_items", {})
+    
+    parts = query.data.split(":")
+    action = parts[1]
+    
+    if action == "view":
+        try:
+            item_index = int(parts[2])
+            if item_index >= len(inventory):
+                await query.edit_message_text("Item no longer exists in your inventory.")
+                return
+            item = inventory[item_index]
+            display = item_traits.format_item_display(item)
+            
+            keyboard = [
+                [InlineKeyboardButton("✅ Equip", callback_data=f"inv:equip:{item_index}")],
+                [InlineKeyboardButton("🗑️ Discard", callback_data=f"inv:discard:{item_index}")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="inv:back")]
+            ]
+            await query.edit_message_text(display, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        except (ValueError, IndexError):
+            await query.edit_message_text("Error loading item.")
+    
+    elif action == "equip":
+        try:
+            item_index = int(parts[2])
+            if item_index >= len(inventory):
+                await query.edit_message_text("Item no longer exists in your inventory.")
+                return
+            item = inventory[item_index]
+            slot = item.get("slot")
+            
+            currently_equipped = equipped.get(slot)
+            if currently_equipped:
+                inventory.append(currently_equipped)
+            
+            equipped[slot] = item
+            inventory.pop(item_index)
+            
+            profile["inventory"] = inventory
+            profile["equipped_items"] = equipped
+            await save_profile(user.id, profile)
+            
+            msg = f"✅ Equipped *{item.get('name')}* to {slot} slot!"
+            if currently_equipped:
+                msg += f"\n(Unequipped *{currently_equipped.get('name')}* to backpack)"
+            await query.edit_message_text(msg, parse_mode="Markdown")
+        except (ValueError, IndexError) as e:
+            logger.error(f"Equip error: {e}")
+            await query.edit_message_text("Error equipping item.")
+    
+    elif action == "unequip":
+        slot = parts[2]
+        if slot not in equipped or not equipped.get(slot):
+            await query.edit_message_text(f"No item equipped in {slot} slot.")
+            return
+        
+        item = equipped[slot]
+        inventory.append(item)
+        equipped[slot] = None
+        
+        profile["inventory"] = inventory
+        profile["equipped_items"] = equipped
+        await save_profile(user.id, profile)
+        
+        await query.edit_message_text(f"✅ Unequipped *{item.get('name')}* from {slot} slot.", parse_mode="Markdown")
+    
+    elif action == "discard":
+        try:
+            item_index = int(parts[2])
+            if item_index >= len(inventory):
+                await query.edit_message_text("Item no longer exists.")
+                return
+            item = inventory.pop(item_index)
+            profile["inventory"] = inventory
+            await save_profile(user.id, profile)
+            await query.edit_message_text(f"🗑️ Discarded *{item.get('name')}*.", parse_mode="Markdown")
+        except (ValueError, IndexError):
+            await query.edit_message_text("Error discarding item.")
+    
+    elif action == "more":
+        try:
+            start_index = int(parts[2])
+            keyboard = []
+            for i, item in enumerate(inventory[start_index:start_index+10], start=start_index):
+                rarity_icon = item_traits.RARITY_ICONS.get(item.get("rarity", ""), "")
+                slot_icon = item_traits.get_slot_icon(item.get("slot", ""))
+                keyboard.append([InlineKeyboardButton(
+                    f"{rarity_icon} {item.get('name', 'Unknown')} ({slot_icon} {item.get('slot', '')})",
+                    callback_data=f"inv:view:{i}"
+                )])
+            if start_index + 10 < len(inventory):
+                keyboard.append([InlineKeyboardButton("📜 Show More...", callback_data=f"inv:more:{start_index+10}")])
+            keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="inv:back")])
+            await query.edit_message_text("Select an item to manage:", reply_markup=InlineKeyboardMarkup(keyboard))
+        except (ValueError, IndexError):
+            await query.edit_message_text("Error loading more items.")
+    
+    elif action == "back":
+        keyboard = []
+        for i, item in enumerate(inventory[:10]):
+            rarity_icon = item_traits.RARITY_ICONS.get(item.get("rarity", ""), "")
+            slot_icon = item_traits.get_slot_icon(item.get("slot", ""))
+            keyboard.append([InlineKeyboardButton(
+                f"{rarity_icon} {item.get('name', 'Unknown')} ({slot_icon} {item.get('slot', '')})",
+                callback_data=f"inv:view:{i}"
+            )])
+        if len(inventory) > 10:
+            keyboard.append([InlineKeyboardButton("📜 Show More...", callback_data="inv:more:10")])
+        if keyboard:
+            await query.edit_message_text("Select an item to manage:", reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await query.edit_message_text("Your backpack is empty.")
 
 async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -551,7 +734,34 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
 
         apply_pity_after_rarity(state, rarity); await save_state(chat_id, state)
         if reward_type == "item":
-            caption = f"*{name}*\n🔩 *Slot*: {slot}\n✨ *Specialty*: {specialty}\n{rarity_icon} *Rarity*: {rarity}\n🛠️ *Durability*: {random.randint(1,3)}/3\n\n_{background}_"
+            durability = random.randint(1, 3)
+            item_data = item_traits.create_item_data(name, slot, specialty, rarity, background, durability)
+            
+            profile = await get_or_create_profile(user.id, user.first_name)
+            profile["inventory"].append(item_data)
+            await save_profile(user.id, profile)
+            
+            ability = item_data.get("ability")
+            ability_text = ""
+            if ability:
+                effect = ability.get("effect", {})
+                effect_desc = ""
+                if effect.get("type") == "direct_damage":
+                    effect_desc = f"Deal {effect.get('value', 0)} {effect.get('damage_type', '')} damage"
+                elif effect.get("type") == "heal":
+                    if effect.get("target") == "party":
+                        effect_desc = f"Heal party for {effect.get('value', 0)} HP"
+                    else:
+                        effect_desc = f"Heal for {effect.get('value', 0)} HP"
+                elif effect.get("type") == "roll_bonus":
+                    effect_desc = f"+{effect.get('value', 0)} to next roll"
+                ability_text = f"\n⚡ *Ability*: {ability.get('name')} ({ability.get('max_charges', 1)} charges)\n   _{effect_desc}_"
+            
+            damage_type = item_traits.get_damage_type_for_specialty(specialty)
+            damage_bonus = item_traits.get_damage_bonus_for_specialty(specialty, rarity)
+            passive_text = f"\n📈 *Passive*: +{int(damage_bonus * 100)}% {damage_type} damage" if damage_bonus > 0 else ""
+            
+            caption = f"*{name}*\n🔩 *Slot*: {slot}\n✨ *Specialty*: {specialty}\n{rarity_icon} *Rarity*: {rarity}\n🛠️ *Durability*: {durability}/3{ability_text}{passive_text}\n\n_{background}_\n\n✅ _Added to your inventory! Use /inventory to equip._"
             image_prompt = f"A grimdark cyberpunk item. Slot: {slot}, Specialty: {specialty}. Name: {name}. Desc: {background}."
         else:
             caption = f"*{name}*\n{faction_icon(ally_faction)} *Faction*: {ally_faction}\n⚡ *Level*: {level}\n\n_{background}_"
@@ -587,7 +797,26 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
     await query.answer()
     faction_name = query.data.split(":", 1)[1]
     faction_data = FACTIONS[faction_name]
-    new_player = {"id": user.id, "username": user.first_name, "faction": faction_name, "hp": faction_data["hp"], "max_hp": faction_data["hp"], "modifier_type": faction_data["modifier_type"], "modifier_value": faction_data["modifier_value"], "abilities": [json.loads(json.dumps(ability)) for ability in ABILITIES.get(faction_name, [])]}
+    
+    faction_abilities = [json.loads(json.dumps(ability)) for ability in ABILITIES.get(faction_name, [])]
+    
+    profile = await get_or_create_profile(user.id, user.first_name)
+    equipped = profile.get("equipped_items", {})
+    item_abilities = item_traits.get_abilities_from_equipped_items(equipped, reset_charges=True)
+    
+    all_abilities = faction_abilities + item_abilities
+    
+    new_player = {
+        "id": user.id, 
+        "username": user.first_name, 
+        "faction": faction_name, 
+        "hp": faction_data["hp"], 
+        "max_hp": faction_data["hp"], 
+        "modifier_type": faction_data["modifier_type"], 
+        "modifier_value": faction_data["modifier_value"], 
+        "abilities": all_abilities,
+        "equipped_items": equipped
+    }
     state["players"].append(new_player)
     state["last_action_timestamp"] = datetime.datetime.utcnow().isoformat()
     await send_message(context, chat_id, thread_id, f"{user.first_name} has joined as a {faction_name}!")
@@ -641,12 +870,20 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
         if luck_roll == 1: dm_note = f"The player tried to use '{ability_name}', but the outcome was {luck_descriptor}. It had no effect. Narrate this failure."
         else:
             if effect['type'] == 'direct_damage' and state.get("boss"):
-                adjusted, notes = adjust_boss_damage_for_traits(int(round(effect['value'] * multiplier)), state, current_player, None)
+                base_damage = int(round(effect['value'] * multiplier))
+                
+                damage_type = effect.get('damage_type', '')
+                equipped = current_player.get("equipped_items", {})
+                item_multiplier = item_traits.calculate_equipped_damage_bonus(equipped, damage_type)
+                base_damage = int(round(base_damage * item_multiplier))
+                
+                adjusted, notes = adjust_boss_damage_for_traits(base_damage, state, current_player, None)
                 if state.get("selected_route") == "adrenal":
                     adjusted = int(adjusted * 1.5)
                 if adjusted > 0:
                     state['boss']['hp'] -= adjusted; ability_dealt_damage = True
-                    dm_note = f"The player used '{ability_name}'. The outcome was {luck_descriptor}, dealing exactly {adjusted} damage."
+                    item_bonus_text = f" (+{int((item_multiplier - 1) * 100)}% from items)" if item_multiplier > 1 else ""
+                    dm_note = f"The player used '{ability_name}'. The outcome was {luck_descriptor}, dealing exactly {adjusted} damage{item_bonus_text}."
                     if notes: dm_note += f" It also triggered: {', '.join(notes)}."
                 else: dm_note = f"The player used '{ability_name}', but it was resisted and dealt no damage."
             elif effect['type'] == 'heal':
@@ -1093,7 +1330,11 @@ async def gauntlet_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
         state["turn_index"] = 0
         state["location_interaction_used"] = False
         for i, player in enumerate(state["players"]):
-            if faction := player.get("faction"): state["players"][i]["abilities"] = [json.loads(json.dumps(a)) for a in ABILITIES.get(faction, [])]
+            if faction := player.get("faction"):
+                faction_abilities = [json.loads(json.dumps(a)) for a in ABILITIES.get(faction, [])]
+                equipped = player.get("equipped_items", {})
+                item_abilities = item_traits.get_abilities_from_equipped_items(equipped, reset_charges=True)
+                state["players"][i]["abilities"] = faction_abilities + item_abilities
         await query.edit_message_text(f"The challenge intensifies. Re-routing for Floor {state['gauntlet_level']}...")
         state["last_action_timestamp"] = datetime.datetime.utcnow().isoformat()
         await save_state(chat_id, state)
@@ -1346,9 +1587,11 @@ def main():
     app.add_handler(CommandHandler("join", join_command))
     app.add_handler(CommandHandler("endgame", endgame_command))
     app.add_handler(CommandHandler("profile", profile_command))
+    app.add_handler(CommandHandler("inventory", inventory_command))
     app.add_handler(CommandHandler("info", info_command))
     app.add_handler(CommandHandler("leaderboard", leaderboard_command))
     app.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main:"))
+    app.add_handler(CallbackQueryHandler(inventory_callback, pattern="^inv:"))
     app.add_handler(CallbackQueryHandler(faction_selection_callback, pattern="^faction:"))
     app.add_handler(CallbackQueryHandler(route_selection_callback, pattern="^route:"))
     app.add_handler(CallbackQueryHandler(gauntlet_menu_callback, pattern="^gauntlet:"))

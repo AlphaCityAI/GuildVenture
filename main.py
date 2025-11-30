@@ -695,19 +695,20 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         base_roll = random.randint(min_roll, 100)
         run_bonus, a, d, pity = compute_run_bonus(state)
 
-        # Convert bonuses to multipliers and apply them
-        gauntlet_multiplier = 1 + (gauntlet_bonus / 100)
-        run_bonus_multiplier = 1 + (run_bonus / 100)
-        final_roll = min(100, int(round(base_roll * gauntlet_multiplier * run_bonus_multiplier)))
+        # Apply bonuses additively (not multiplicatively) to prevent exponential growth
+        # Gauntlet bonus: +5 per floor (max 5 * 20 = 100, but capped at final roll 95)
+        # Run bonus: direct percentage points added (capped at 60)
+        gauntlet_bonus_points = max(0, state.get("gauntlet_level", 1) * 5 - 5)
+        final_roll = min(95, base_roll + gauntlet_bonus_points + run_bonus)
 
         rarity, rarity_icon, level = get_rarity_and_level(final_roll)
 
-        # Update breakdown string to reflect multiplicative logic
+        # Update breakdown string to reflect additive logic
         breakdown = f"Roll: {base_roll}"
-        if gauntlet_bonus > 0:
-            breakdown += f" x {gauntlet_multiplier:.2f} (gauntlet)"
+        if gauntlet_bonus_points > 0:
+            breakdown += f" +{gauntlet_bonus_points} (gauntlet floor)"
         if run_bonus > 0:
-            breakdown += f" x {run_bonus_multiplier:.2f} (run)"
+            breakdown += f" +{run_bonus} (run bonus)"
         breakdown += f" = *{final_roll}* → *{rarity}*"
 
         await send_message(context, chat_id, thread_id, f"🧪 {breakdown}")

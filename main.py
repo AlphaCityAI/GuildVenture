@@ -6,6 +6,7 @@ import random
 import re
 import base64
 import requests
+import copy
 from typing import Optional, Tuple, List, Dict, Any
 import datetime
 
@@ -156,8 +157,6 @@ def compute_run_bonus(state: dict):
     bonus = attempted + defeated
     return min(bonus, 60), attempted, defeated
 
-def apply_pity_after_rarity(state: dict, rarity: str):
-    pass
 
 def get_next_turn_index(players_list: List[dict], current_player_id: Optional[int], original_turn_index: int) -> int:
     """
@@ -725,7 +724,7 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             await send_message(context, chat_id, thread_id, "Error parsing reward details from AI. Please try again.")
             return
 
-        apply_pity_after_rarity(state, rarity); await save_state(chat_id, state)
+        await save_state(chat_id, state)
         if reward_type == "item":
             durability = random.randint(1, 3)
             item_data = item_traits.create_item_data(name, slot, specialty, rarity, background, durability)
@@ -791,7 +790,7 @@ async def faction_selection_callback(update: Update, context: ContextTypes.DEFAU
     faction_name = query.data.split(":", 1)[1]
     faction_data = FACTIONS[faction_name]
     
-    faction_abilities = [json.loads(json.dumps(ability)) for ability in ABILITIES.get(faction_name, [])]
+    faction_abilities = [copy.deepcopy(ability) for ability in ABILITIES.get(faction_name, [])]
     
     profile = await get_or_create_profile(user.id, user.first_name)
     equipped = profile.get("equipped_items", {})
@@ -1324,7 +1323,7 @@ async def gauntlet_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
         state["location_interaction_used"] = False
         for i, player in enumerate(state["players"]):
             if faction := player.get("faction"):
-                faction_abilities = [json.loads(json.dumps(a)) for a in ABILITIES.get(faction, [])]
+                faction_abilities = [copy.deepcopy(a) for a in ABILITIES.get(faction, [])]
                 equipped = player.get("equipped_items", {})
                 item_abilities = item_traits.get_abilities_from_equipped_items(equipped, reset_charges=True)
                 state["players"][i]["abilities"] = faction_abilities + item_abilities

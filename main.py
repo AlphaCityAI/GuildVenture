@@ -5,12 +5,12 @@ import logging
 import random
 import re
 import base64
-import requests
+import httpx
 import copy
 from typing import Optional, Tuple, List, Dict, Any
 import datetime
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 # Import the error
 from telegram.error import RetryAfter
@@ -22,7 +22,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from replit import db
+import database as db_layer
 
 # Import constants, prompts, and external data
 from locations import LOCATIONS
@@ -44,10 +44,17 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     logger.error("OPENAI_API_KEY missing")
     raise SystemExit("Set OPENAI_API_KEY in environment")
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 # CHAT_MODEL and IMAGE_MODEL are now imported from game_constants
 
 # ───────── Helpers ─────────
+async def send_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Send a 'typing' chat action indicator so users see 'Bot is typing...'."""
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    except Exception:
+        pass  # Non-critical; don't crash if this fails
+
 def create_bar(current: int, total: int, length: int = 10) -> str:
     """Creates a generic text-based progress bar."""
     current = max(0, current)
@@ -61,7 +68,7 @@ async def gpt_request(**kwargs):
     backoff = 1
     for _ in range(3):
         try:
-            return await asyncio.to_thread(client.chat.completions.create, **kwargs)
+            return await client.chat.completions.create(**kwargs)
         except Exception as e:
             logger.warning("GPT call failed, retrying in %ds: %s", backoff, e)
             await asyncio.sleep(backoff)
@@ -73,26 +80,18 @@ async def generate_image(prompt: str) -> Optional[str]:
     # Use the prompt function from prompts.py
     enhanced_prompt = prompts.get_image_prompt(prompt)
     try:
-        def _generate_and_fetch():
-            resp = client.images.generate(model=IMAGE_MODEL, prompt=enhanced_prompt, n=1, size="1024x1024", quality="medium")
-            img = resp.data[0]
-            if getattr(img, "b64_json", None): return img.b64_json
-            if getattr(img, "url", None):
-                r = requests.get(img.url, timeout=30)
+        resp = await client.images.generate(model=IMAGE_MODEL, prompt=enhanced_prompt, n=1, size="1024x1024", quality="medium")
+        img = resp.data[0]
+        if getattr(img, "b64_json", None): return img.b64_json
+        if getattr(img, "url", None):
+            async with httpx.AsyncClient() as http_client:
+                r = await http_client.get(img.url, timeout=30)
                 r.raise_for_status()
                 return base64.b64encode(r.content).decode("utf-8")
-            raise Exception("No image data in response")
-        return await asyncio.to_thread(_generate_and_fetch)
+        raise Exception("No image data in response")
     except Exception as e:
         logger.error("Image gen error: %s", e, exc_info=True)
         return None
-
-async def send_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id: Optional[int], text: str, reply_markup=None):
-    """
-    Sends a message to a specific chat and thread, optimized to not re-load state.
-    """
-    text_to_send = (text or "")[:4090]
-    await context.bot.send_message(chat_id=chat_id, message_thread_id=thread_id, text=text_to_send, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def send_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id: Optional[int], text: str, reply_markup=None):
     """
@@ -180,44 +179,25 @@ def get_next_turn_index(players_list: List[dict], current_player_id: Optional[in
         return original_turn_index % len(players_list) if len(players_list) > 0 else 0
 
 # ───────── Persistence (Game State) ─────────
-def get_state_key(chat_id: int) -> str: return f"game_state_{chat_id}"
 async def load_state(chat_id: int) -> dict:
-    key = get_state_key(chat_id)
-    try:
-        j = await asyncio.to_thread(db.get, key)
-        return json.loads(j) if j else {}
-    except Exception as e:
-        logger.error("load_state fail: %s", e)
-        return {}
+    return await db_layer.load_state(chat_id)
+
 async def save_state(chat_id: int, state: dict):
-    key = get_state_key(chat_id)
-    try:
-        # Convert Enum members to their names for JSON serialization
-        if 'game_stage' in state and isinstance(state['game_stage'], GameStage):
-            state['game_stage'] = state['game_stage'].name
-        await asyncio.to_thread(db.__setitem__, key, json.dumps(state))
-    except Exception as e:
-        logger.error("save_state fail: %s", e)
+    # Convert Enum members to their names for JSON serialization
+    if 'game_stage' in state and isinstance(state['game_stage'], GameStage):
+        state['game_stage'] = state['game_stage'].name
+    await db_layer.save_state(chat_id, state)
 
 # ───────── Persistence (Player Profiles) ─────────
-def get_profile_key(user_id: int) -> str: return f"player_profile_{user_id}"
 async def load_profile(user_id: int) -> Optional[dict]:
-    key = get_profile_key(user_id)
-    try:
-        j = await asyncio.to_thread(db.get, key)
-        return json.loads(j) if j else None
-    except Exception as e:
-        logger.error("load_profile fail: %s", e)
-        return None
+    return await db_layer.load_profile(user_id)
+
 async def save_profile(user_id: int, profile: dict):
-    key = get_profile_key(user_id)
-    try:
-        await asyncio.to_thread(db.__setitem__, key, json.dumps(profile))
-    except Exception as e:
-        logger.error("save_profile fail: %s", e)
+    await db_layer.save_profile(user_id, profile)
 
 async def get_or_create_profile(user_id: int, username: str) -> dict:
     profile = await load_profile(user_id)
+    needs_save = False
     if profile is None:
         profile = {
             "username": username, "level": 1, "current_xp": 0,
@@ -228,13 +208,12 @@ async def get_or_create_profile(user_id: int, username: str) -> dict:
             "inventory": [],
             "equipped_items": {"Cranial": None, "Chassis": None, "Equipment": None, "Mobility": None, "Companion": None}
         }
-        await save_profile(user_id, profile)
+        needs_save = True
     # Ensure username is up-to-date
     if profile.get("username") != username:
         profile["username"] = username
-        await save_profile(user_id, profile)
+        needs_save = True
     # Migrate old profiles that don't have inventory/equipped_items
-    needs_save = False
     if "inventory" not in profile:
         profile["inventory"] = []
         needs_save = True
@@ -247,21 +226,7 @@ async def get_or_create_profile(user_id: int, username: str) -> dict:
 
 async def get_all_profiles() -> List[dict]:
     """Fetches all player profiles from the database."""
-    try:
-        # Use efficient prefix search instead of loading all keys
-        profile_keys = await asyncio.to_thread(db.prefix, "player_profile_")
-        profiles = []
-        for key in profile_keys:
-            j = await asyncio.to_thread(db.get, key)
-            if j:
-                try:
-                    profiles.append(json.loads(j))
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not decode profile for key: {key}")
-        return profiles
-    except Exception as e:
-        logger.error(f"Failed to get all profiles: {e}")
-        return []
+    return await db_layer.get_all_profiles()
 
 
 async def award_xp(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id: Optional[int], user_id: int, username: str, amount: int, reason: str):
@@ -348,21 +313,14 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays the top players."""
     await update.message.reply_text("📡 Accessing the Alpha City Legends network...")
-    all_profiles = await get_all_profiles()
+    top_profiles = await db_layer.get_top_profiles(10)
 
-    if not all_profiles:
+    if not top_profiles:
         await update.message.reply_text("The leaderboard is empty. Be the first legend!")
         return
 
-    # Sort by highest floor, then by bosses defeated as a tie-breaker
-    sorted_profiles = sorted(
-        all_profiles,
-        key=lambda p: (p.get('stats', {}).get('highest_floor', 0), p.get('stats', {}).get('bosses_defeated', 0)),
-        reverse=True
-    )
-
     message_lines = ["🏆 *Alpha City Legends Leaderboard* 🏆\n"]
-    for i, profile in enumerate(sorted_profiles[:10]):
+    for i, profile in enumerate(top_profiles):
         rank = i + 1
         name = profile.get('username', 'Unknown Agent')
         floor = profile.get('stats', {}).get('highest_floor', 0)
@@ -415,10 +373,9 @@ async def inventory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not inventory:
         lines.append("  _Your backpack is empty._")
     
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-    
+    # Build a single combined keyboard for item management and unequip actions
+    keyboard = []
     if inventory:
-        keyboard = []
         for i, item in enumerate(inventory[:10]):
             rarity_icon = item_traits.RARITY_ICONS.get(item.get("rarity", ""), "")
             slot_icon = item_traits.get_slot_icon(item.get("slot", ""))
@@ -428,16 +385,15 @@ async def inventory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )])
         if len(inventory) > 10:
             keyboard.append([InlineKeyboardButton("📜 Show More...", callback_data="inv:more:10")])
-        await update.message.reply_text("Select an item to manage:", reply_markup=InlineKeyboardMarkup(keyboard))
     
     if any(equipped.get(slot) for slot in item_traits.ITEM_SLOTS):
-        keyboard = []
         for slot in item_traits.ITEM_SLOTS:
             if equipped.get(slot):
                 slot_icon = item_traits.get_slot_icon(slot)
                 keyboard.append([InlineKeyboardButton(f"Unequip {slot_icon} {slot}", callback_data=f"inv:unequip:{slot}")])
-        if keyboard:
-            await update.message.reply_text("Or unequip an item:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    await update.message.reply_text("\n".join(lines), reply_markup=reply_markup, parse_mode="Markdown")
 
 async def inventory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inventory button callbacks."""
@@ -463,7 +419,7 @@ async def inventory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
             keyboard = [
                 [InlineKeyboardButton("✅ Equip", callback_data=f"inv:equip:{item_index}")],
-                [InlineKeyboardButton("🗑️ Discard", callback_data=f"inv:discard:{item_index}")],
+                [InlineKeyboardButton("🗑️ Discard", callback_data=f"inv:confirm_discard:{item_index}")],
                 [InlineKeyboardButton("⬅️ Back", callback_data="inv:back")]
             ]
             await query.edit_message_text(display, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -514,6 +470,21 @@ async def inventory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         await query.edit_message_text(f"✅ Unequipped *{item.get('name')}* from {slot} slot.", parse_mode="Markdown")
     
+    elif action == "confirm_discard":
+        try:
+            item_index = int(parts[2])
+            if item_index >= len(inventory):
+                await query.edit_message_text("Item no longer exists.")
+                return
+            item = inventory[item_index]
+            keyboard = [
+                [InlineKeyboardButton("⚠️ Yes, discard permanently", callback_data=f"inv:discard:{item_index}")],
+                [InlineKeyboardButton("⬅️ Cancel", callback_data=f"inv:view:{item_index}")]
+            ]
+            await query.edit_message_text(f"Are you sure you want to discard *{item.get('name')}*? This cannot be undone.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        except (ValueError, IndexError):
+            await query.edit_message_text("Error loading item.")
+
     elif action == "discard":
         try:
             item_index = int(parts[2])
@@ -618,8 +589,8 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         factions = list(FACTIONS.keys())
         keyboard = [[InlineKeyboardButton(f, callback_data=f"faction:{f}") for f in factions[i:i + 2]] for i in range(0, len(factions), 2)]
         await query.edit_message_text("A new adventure awaits. The first player to choose a faction begins. Others may /join.", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif action == "hire_help": await generate_and_send_reward(context, chat_id, user, "character", 1)
-    elif action == "dig_treasure": await generate_and_send_reward(context, chat_id, user, "item", 1)
+    elif action == "hire_help": await generate_and_send_reward(context, chat_id, user, "character", 1, state=state)
+    elif action == "dig_treasure": await generate_and_send_reward(context, chat_id, user, "item", 1, state=state)
 
 # ───────── Scouting for Gauntlet ─────────
 def weighted_choice(options: List[Tuple[str, int]]) -> str:
@@ -641,8 +612,8 @@ async def start_scouting(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state
     state["scout"], state["selected_route"] = {"odds": odds, "hazard": hazard}, None
     await save_state(chat_id, state)
     lines = ["📡 *Scouting Report*", "Likely bosses:"] + [f"• {name}: {int(p*100)}%" for name, p in odds] + [f"\nGlobal hazard: *{hazard['label']}*"]
-    bonus, a, d, pity = compute_run_bonus(state)
-    lines.append(f"\nRun Bonus: *+{bonus}%* (Attempted {a}, Defeated {d}{', Pity +10%' if pity else ''})")
+    bonus, a, d = compute_run_bonus(state)
+    lines.append(f"\nRun Bonus: *+{bonus}%* (Attempted {a}, Defeated {d})")
     keyboard = [
         [InlineKeyboardButton(f"💥 Route: {GAUNTLET_ROUTES['adrenal']['name']}", callback_data="route:adrenal")],
         [InlineKeyboardButton(f"🧪 Route: {GAUNTLET_ROUTES['juiced_up']['name']}", callback_data="route:juiced_up")],
@@ -682,8 +653,9 @@ async def route_selection_callback(update: Update, context: ContextTypes.DEFAULT
 
 
 # ───────── Rewards ─────────
-async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user, reward_type: str, min_roll: int, gauntlet_bonus: int = 0):
-    state = await load_state(chat_id)
+async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user, reward_type: str, min_roll: int, gauntlet_bonus: int = 0, state: dict = None):
+    if state is None:
+        state = await load_state(chat_id)
     thread_id = state.get("thread_id")
     await send_message(context, chat_id, thread_id, f"🎲 Rolling the dice for a new {reward_type}...")
 
@@ -716,6 +688,7 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             # Use prompt function
             prompt = prompts.get_char_reward_prompt(rarity, ally_faction)
 
+        await send_typing(context, chat_id)
         response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
         try:
             content = json.loads(response.choices[0].message.content)
@@ -759,13 +732,15 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             caption = f"*{name}*\n{faction_icon(ally_faction)} *Faction*: {ally_faction}\n⚡ *Level*: {level}\n\n_{background}_"
             image_prompt = f"Cyberpunk character from {ally_faction}: {name}. {background}."
 
-        await send_message(context, chat_id, thread_id, "Please wait, generating visual data...")
+        # Send the text reward immediately so users don't wait for image
+        await send_message(context, chat_id, thread_id, caption)
+
+        # Generate and send image as a follow-up (non-blocking feel)
+        await send_typing(context, chat_id)
         b64 = await generate_image(image_prompt)
         if b64:
             img = base64.b64decode(b64)
-            await context.bot.send_photo(chat_id=chat_id, photo=img, caption=caption, message_thread_id=thread_id, parse_mode="Markdown")
-        else: 
-            await send_message(context, chat_id, thread_id, caption) # Send text caption as fallback
+            await context.bot.send_photo(chat_id=chat_id, photo=img, caption=f"_{name}_", message_thread_id=thread_id, parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"Critical error in reward generation: {e}", exc_info=True)
@@ -836,9 +811,10 @@ def guess_action_category(text: str) -> str:
     if re.search(r'smash|break|force|strike|shoot|punch|kick', text, re.I): return 'strength'
     return 'stealth'
 
-async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYPE, player_action: str):
+async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYPE, player_action: str, state: dict = None):
     chat_id = update.effective_chat.id
-    state = await load_state(chat_id)
+    if state is None:
+        state = await load_state(chat_id)
     thread_id = state.get("thread_id")
 
     players = state.get("players", [])
@@ -950,6 +926,7 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
             user_prompt += f"\nPre-selected Boss Ability: {chosen_boss_ability['name']} ({chosen_boss_ability['description']}) - Effects: {json.dumps(ability_effects)}.{target_note}"
 
         try:
+            await send_typing(context, chat_id)
             response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], response_format={"type": "json_object"})
             result = json.loads(response.choices[0].message.content)
         except Exception as e: 
@@ -973,12 +950,14 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         else: # Ability was used
-            await send_message(context, chat_id, thread_id, f"*{current_player['username']}'s Turn:*\n{player_narrative}")
+            # Consolidate player turn into a single message
+            turn_parts = [f"*{current_player['username']}'s Turn:*\n{player_narrative}"]
         if boss_damage_raw > 0:
             adj_dmg, notes = adjust_boss_damage_for_traits(boss_damage_raw, state, current_player, action_category_for_location)
             state['boss']['hp'] -= adj_dmg
-            await send_message(context, chat_id, thread_id, f"💥 You dealt *{adj_dmg} damage* to {boss['name']}!" + ("\n" + "\n".join([f"_{n}_" for n in notes if n]) if notes else ""))
-        await send_message(context, chat_id, thread_id, f"*{boss['name']}*\n{create_bar(state['boss']['hp'], state['boss']['max_hp'])} {state['boss']['hp']}/{state['boss']['max_hp']}")
+            turn_parts.append(f"💥 You dealt *{adj_dmg} damage* to {boss['name']}!" + ("\n" + "\n".join([f"_{n}_" for n in notes if n]) if notes else ""))
+        turn_parts.append(f"*{boss['name']}*\n{create_bar(state['boss']['hp'], state['boss']['max_hp'])} {state['boss']['hp']}/{state['boss']['max_hp']}")
+        await send_message(context, chat_id, thread_id, "\n\n".join(turn_parts))
 
         # THIS IS THE FIX
         if state['boss']['hp'] <= 0:
@@ -988,7 +967,8 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
 
         await asyncio.sleep(1.5)
 
-        # Process any boss healing effects before retaliation
+        # Process any boss healing effects before retaliation and build retaliation message
+        retaliation_parts = []
         if chosen_boss_ability:
             for effect in chosen_boss_ability.get("effects", []):
                 if effect.get("type") == "heal" and effect.get("target") == "self":
@@ -997,10 +977,10 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
                         heal_amount *= 2
                     if heal_amount > 0:
                         boss['hp'] = min(boss['max_hp'], boss['hp'] + heal_amount)
-                        await send_message(context, chat_id, thread_id, f"✨ {boss['name']} regenerates *{heal_amount} HP*!")
-                        await send_message(context, chat_id, thread_id, f"*{boss['name']}*\n{create_bar(boss['hp'], boss['max_hp'])} {boss['hp']}/{boss['max_hp']}")
+                        retaliation_parts.append(f"✨ {boss['name']} regenerates *{heal_amount} HP*!\n{create_bar(boss['hp'], boss['max_hp'])} {boss['hp']}/{boss['max_hp']}")
 
-        await send_message(context, chat_id, thread_id, f"*{boss['name']}'s Retaliation ({boss_ability_choice}):*\n{boss_narrative}")
+        retaliation_parts.append(f"*{boss['name']}'s Retaliation ({boss_ability_choice}):*\n{boss_narrative}")
+        await send_message(context, chat_id, thread_id, "\n\n".join(retaliation_parts))
 
         turn_index = state.get('turn_index', 0)
         current_player_id = players[turn_index]['id'] if players and turn_index < len(players) else None
@@ -1031,6 +1011,7 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         try:
+            await send_typing(context, chat_id)
             response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], response_format={"type": "json_object"})
             result = json.loads(response.choices[0].message.content)
         except Exception as e: 
@@ -1092,6 +1073,7 @@ async def start_level(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: d
     # Use prompt function
     prompt = prompts.get_start_level_prompt(player_list, location)
 
+    await send_typing(context, chat_id)
     response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
     content = json.loads(response.choices[0].message.content)
 
@@ -1102,6 +1084,7 @@ async def start_level(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: d
     # 3. Generate an image for the scene
     image_prompt = f"A grimdark cyberpunk scene in '{location['name']}'. The scene: {opening_scene}"
 
+    await send_typing(context, chat_id)
     await send_message(context, chat_id, thread_id, "Please wait, materializing the environment...")
     b64 = await generate_image(image_prompt)
 
@@ -1205,12 +1188,46 @@ async def prompt_for_next_action(context: ContextTypes.DEFAULT_TYPE, chat_id: in
                 interaction = location["interaction"]
                 keyboard.append([InlineKeyboardButton(f"⚡️ {interaction['name']}", callback_data=f"env_action:{interaction['category']}")])
 
+        # Add Boss Info button so players can review strengths/weaknesses
+        keyboard.append([InlineKeyboardButton("📋 Boss Info", callback_data="boss_info")])
         prompt_text = f"It's *{current_player['username']}'s* turn. You must use an ability to act."
     else: # Open Campaign
         prompt_text = f"It's *{current_player['username']}'s* turn. Type your custom action."
 
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
     await send_message(context, chat_id, thread_id, prompt_text, reply_markup=reply_markup)
+
+async def boss_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show boss strengths and weaknesses when the Boss Info button is pressed."""
+    query = update.callback_query
+    chat_id = query.message.chat.id
+    state = await load_state(chat_id)
+    boss = state.get("boss")
+
+    if not boss:
+        return await query.answer("No active boss.", show_alert=True)
+
+    lines = [f"📋 *{boss['name']}*"]
+    lines.append(f"HP: {create_bar(boss['hp'], boss['max_hp'])} {boss['hp']}/{boss['max_hp']}")
+
+    strengths = boss.get("strengths", [])
+    weaknesses = boss.get("weaknesses", [])
+    if strengths:
+        lines.append("\n🛡️ *Resistances:*")
+        for s in strengths:
+            lines.append(f"  • {s.get('damage_type', '?')}: {s.get('narrative', '')}")
+    if weaknesses:
+        lines.append("\n⚡ *Vulnerabilities:*")
+        for w in weaknesses:
+            lines.append(f"  • {w.get('damage_type', '?')}: {w.get('narrative', '')}")
+
+    if not strengths and not weaknesses:
+        lines.append("\n_No known resistances or vulnerabilities._")
+
+    await query.answer()
+    await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+    # Re-prompt the current player after viewing info
+    await prompt_for_next_action(context, chat_id, state)
 
 # ───────── Gauntlet Floor Start ─────────
 def pick_weighted_boss_from_scout(state: dict) -> str:
@@ -1240,6 +1257,7 @@ async def start_gauntlet_floor(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
     # Use prompt function
     prompt = prompts.get_start_gauntlet_prompt(boss_archetype_name, boss_archetype_data, location)
 
+    await send_typing(context, chat_id)
     resp = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
     content = json.loads(resp.choices[0].message.content)
     state["boss"] = {"name": content.get("boss_name", boss_archetype_name), "description": content.get("boss_description"), "archetype": boss_archetype_name, "abilities": boss_archetype_data["abilities"], "strengths": boss_archetype_data.get("strengths", []), "weaknesses": boss_archetype_data.get("weaknesses", []), "hp": boss_hp, "max_hp": boss_hp}
@@ -1248,6 +1266,7 @@ async def start_gauntlet_floor(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
     state["location_interaction_used"] = False # Reset on new floor
     await save_state(chat_id, state)
 
+    await send_typing(context, chat_id)
     await send_message(context, chat_id, thread_id, "Please wait, materializing the target...")
     b64 = await generate_image(f"A grimdark cyberpunk boss, {state['boss']['name']}, in '{location['name']}'. Scene: {state['boss']['description']}")
     caption = f"*Gauntlet Floor {floor}*\n📍 *{location['name']}*\n*Objective:* {state['objective']}\n\n{state['boss']['description']}\n\n_Global hazard active: {hazard['label']}_"
@@ -1282,10 +1301,12 @@ async def run_epilogue(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: 
     # Use prompt function
     prompt = prompts.get_victory_epilogue_prompt(state.get('narrative_log', [''])[-1])
 
+    await send_typing(context, chat_id)
     response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=120)
     epilogue = response.choices[0].message.content.strip()
     await send_message(context, chat_id, thread_id, epilogue)
 
+    await send_typing(context, chat_id)
     await send_message(context, chat_id, thread_id, "Please wait, immortalizing the moment...")
     b64 = await generate_image(f"A cyberpunk victory scene in Alpha City: {epilogue}")
     if b64: await context.bot.send_photo(chat_id=chat_id, photo=base64.b64decode(b64), caption="_Your victory, immortalized._", message_thread_id=thread_id, parse_mode="Markdown")
@@ -1362,7 +1383,7 @@ async def reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_parts = query.data.split(":")
         reward_type, gauntlet_bonus = data_parts[1], int(data_parts[2]) if len(data_parts) > 2 else 0
         await query.edit_message_text(f"You chose to receive a new {reward_type}. Good choice.")
-        await generate_and_send_reward(context, chat_id, user, reward_type, 20, gauntlet_bonus)
+        await generate_and_send_reward(context, chat_id, user, reward_type, 20, gauntlet_bonus, state=state)
 
     except Exception as e:
         logger.error(f"Error during reward generation: {e}", exc_info=True)
@@ -1474,6 +1495,7 @@ async def environment_action_callback(update: Update, context: ContextTypes.DEFA
     )
 
     try:
+        await send_typing(context, chat_id)
         response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], response_format={"type": "json_object"})
         result = json.loads(response.choices[0].message.content)
     except Exception as e:
@@ -1539,7 +1561,7 @@ async def ability_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loading_message = await query.edit_message_text(f"{players[turn_index]['username']} uses *{ability_name}*!", parse_mode="Markdown")
     state["last_action_timestamp"] = datetime.datetime.utcnow().isoformat()
     await save_state(chat_id, state) # Save the lock and new charge count
-    await handle_player_action(update, context, f"[ABILITY]:{ability_name}")
+    await handle_player_action(update, context, f"[ABILITY]:{ability_name}", state)
     try: await context.bot.delete_message(chat_id=chat_id, message_id=loading_message.message_id)
     except Exception as e: logger.warning(f"Could not delete ability confirmation message: {e}")
 
@@ -1568,13 +1590,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state["is_processing_turn"] = True # <-- LOCK
     await save_state(chat_id, state)
 
-    await handle_player_action(update, context, update.message.text.strip())
+    await handle_player_action(update, context, update.message.text.strip(), state)
 
 # ───────── Main & Polling ─────────
+async def _post_init(app: Application) -> None:
+    """Called after the Application is built – initialise the DB pool."""
+    await db_layer.init_db()
+
+async def _post_shutdown(app: Application) -> None:
+    """Called when the Application shuts down – close the DB pool."""
+    await db_layer.close_db()
+
 def main():
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN: logger.error("TELEGRAM_TOKEN missing"); return
-    app = Application.builder().token(TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
     app.add_handler(CommandHandler("venture", venture))
     app.add_handler(CommandHandler("join", join_command))
     app.add_handler(CommandHandler("endgame", endgame_command))
@@ -1590,6 +1626,7 @@ def main():
     app.add_handler(CallbackQueryHandler(reward_callback, pattern="^reward:"))
     app.add_handler(CallbackQueryHandler(ability_callback, pattern="^ability:"))
     app.add_handler(CallbackQueryHandler(environment_action_callback, pattern="^env_action:"))
+    app.add_handler(CallbackQueryHandler(boss_info_callback, pattern="^boss_info$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot polling started")
     app.run_polling()

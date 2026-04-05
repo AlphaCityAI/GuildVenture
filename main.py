@@ -90,13 +90,6 @@ async def generate_image(prompt: str) -> Optional[str]:
 async def send_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id: Optional[int], text: str, reply_markup=None):
     """
     Sends a message to a specific chat and thread, optimized to not re-load state.
-    """
-    text_to_send = (text or "")[:4090]
-    await context.bot.send_message(chat_id=chat_id, message_thread_id=thread_id, text=text_to_send, reply_markup=reply_markup, parse_mode="Markdown")
-
-async def send_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id: Optional[int], text: str, reply_markup=None):
-    """
-    Sends a message to a specific chat and thread, optimized to not re-load state.
     Includes automatic retry logic for flood control.
     """
     text_to_send = (text or "")[:4090]
@@ -607,8 +600,8 @@ async def start_scouting(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state
     state["scout"], state["selected_route"] = {"odds": odds, "hazard": hazard}, None
     await save_state(chat_id, state)
     lines = ["📡 *Scouting Report*", "Likely bosses:"] + [f"• {name}: {int(p*100)}%" for name, p in odds] + [f"\nGlobal hazard: *{hazard['label']}*"]
-    bonus, a, d, pity = compute_run_bonus(state)
-    lines.append(f"\nRun Bonus: *+{bonus}%* (Attempted {a}, Defeated {d}{', Pity +10%' if pity else ''})")
+    bonus, a, d = compute_run_bonus(state)
+    lines.append(f"\nRun Bonus: *+{bonus}%* (Attempted {a}, Defeated {d})")
     keyboard = [
         [InlineKeyboardButton(f"💥 Route: {GAUNTLET_ROUTES['adrenal']['name']}", callback_data="route:adrenal")],
         [InlineKeyboardButton(f"🧪 Route: {GAUNTLET_ROUTES['juiced_up']['name']}", callback_data="route:juiced_up")],

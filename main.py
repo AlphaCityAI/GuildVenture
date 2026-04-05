@@ -731,14 +731,15 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             caption = f"*{name}*\n{faction_icon(ally_faction)} *Faction*: {ally_faction}\n⚡ *Level*: {level}\n\n_{background}_"
             image_prompt = f"Cyberpunk character from {ally_faction}: {name}. {background}."
 
+        # Send the text reward immediately so users don't wait for image
+        await send_message(context, chat_id, thread_id, caption)
+
+        # Generate and send image as a follow-up (non-blocking feel)
         await send_typing(context, chat_id)
-        await send_message(context, chat_id, thread_id, "Please wait, generating visual data...")
         b64 = await generate_image(image_prompt)
         if b64:
             img = base64.b64decode(b64)
-            await context.bot.send_photo(chat_id=chat_id, photo=img, caption=caption, message_thread_id=thread_id, parse_mode="Markdown")
-        else: 
-            await send_message(context, chat_id, thread_id, caption) # Send text caption as fallback
+            await context.bot.send_photo(chat_id=chat_id, photo=img, caption=f"_{name}_", message_thread_id=thread_id, parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"Critical error in reward generation: {e}", exc_info=True)
@@ -1186,12 +1187,46 @@ async def prompt_for_next_action(context: ContextTypes.DEFAULT_TYPE, chat_id: in
                 interaction = location["interaction"]
                 keyboard.append([InlineKeyboardButton(f"⚡️ {interaction['name']}", callback_data=f"env_action:{interaction['category']}")])
 
+        # Add Boss Info button so players can review strengths/weaknesses
+        keyboard.append([InlineKeyboardButton("📋 Boss Info", callback_data="boss_info")])
         prompt_text = f"It's *{current_player['username']}'s* turn. You must use an ability to act."
     else: # Open Campaign
         prompt_text = f"It's *{current_player['username']}'s* turn. Type your custom action."
 
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
     await send_message(context, chat_id, thread_id, prompt_text, reply_markup=reply_markup)
+
+async def boss_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show boss strengths and weaknesses when the Boss Info button is pressed."""
+    query = update.callback_query
+    chat_id = query.message.chat.id
+    state = await load_state(chat_id)
+    boss = state.get("boss")
+
+    if not boss:
+        return await query.answer("No active boss.", show_alert=True)
+
+    lines = [f"📋 *{boss['name']}*"]
+    lines.append(f"HP: {create_bar(boss['hp'], boss['max_hp'])} {boss['hp']}/{boss['max_hp']}")
+
+    strengths = boss.get("strengths", [])
+    weaknesses = boss.get("weaknesses", [])
+    if strengths:
+        lines.append("\n🛡️ *Resistances:*")
+        for s in strengths:
+            lines.append(f"  • {s.get('damage_type', '?')}: {s.get('narrative', '')}")
+    if weaknesses:
+        lines.append("\n⚡ *Vulnerabilities:*")
+        for w in weaknesses:
+            lines.append(f"  • {w.get('damage_type', '?')}: {w.get('narrative', '')}")
+
+    if not strengths and not weaknesses:
+        lines.append("\n_No known resistances or vulnerabilities._")
+
+    await query.answer()
+    await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+    # Re-prompt the current player after viewing info
+    await prompt_for_next_action(context, chat_id, state)
 
 # ───────── Gauntlet Floor Start ─────────
 def pick_weighted_boss_from_scout(state: dict) -> str:
@@ -1590,6 +1625,7 @@ def main():
     app.add_handler(CallbackQueryHandler(reward_callback, pattern="^reward:"))
     app.add_handler(CallbackQueryHandler(ability_callback, pattern="^ability:"))
     app.add_handler(CallbackQueryHandler(environment_action_callback, pattern="^env_action:"))
+    app.add_handler(CallbackQueryHandler(boss_info_callback, pattern="^boss_info$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot polling started")
     app.run_polling()

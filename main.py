@@ -569,8 +569,8 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         factions = list(FACTIONS.keys())
         keyboard = [[InlineKeyboardButton(f, callback_data=f"faction:{f}") for f in factions[i:i + 2]] for i in range(0, len(factions), 2)]
         await query.edit_message_text("A new adventure awaits. The first player to choose a faction begins. Others may /join.", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif action == "hire_help": await generate_and_send_reward(context, chat_id, user, "character", 1)
-    elif action == "dig_treasure": await generate_and_send_reward(context, chat_id, user, "item", 1)
+    elif action == "hire_help": await generate_and_send_reward(context, chat_id, user, "character", 1, state=state)
+    elif action == "dig_treasure": await generate_and_send_reward(context, chat_id, user, "item", 1, state=state)
 
 # ───────── Scouting for Gauntlet ─────────
 def weighted_choice(options: List[Tuple[str, int]]) -> str:
@@ -633,8 +633,9 @@ async def route_selection_callback(update: Update, context: ContextTypes.DEFAULT
 
 
 # ───────── Rewards ─────────
-async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user, reward_type: str, min_roll: int, gauntlet_bonus: int = 0):
-    state = await load_state(chat_id)
+async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user, reward_type: str, min_roll: int, gauntlet_bonus: int = 0, state: dict = None):
+    if state is None:
+        state = await load_state(chat_id)
     thread_id = state.get("thread_id")
     await send_message(context, chat_id, thread_id, f"🎲 Rolling the dice for a new {reward_type}...")
 
@@ -787,9 +788,10 @@ def guess_action_category(text: str) -> str:
     if re.search(r'smash|break|force|strike|shoot|punch|kick', text, re.I): return 'strength'
     return 'stealth'
 
-async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYPE, player_action: str):
+async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYPE, player_action: str, state: dict = None):
     chat_id = update.effective_chat.id
-    state = await load_state(chat_id)
+    if state is None:
+        state = await load_state(chat_id)
     thread_id = state.get("thread_id")
 
     players = state.get("players", [])
@@ -1313,7 +1315,7 @@ async def reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_parts = query.data.split(":")
         reward_type, gauntlet_bonus = data_parts[1], int(data_parts[2]) if len(data_parts) > 2 else 0
         await query.edit_message_text(f"You chose to receive a new {reward_type}. Good choice.")
-        await generate_and_send_reward(context, chat_id, user, reward_type, 20, gauntlet_bonus)
+        await generate_and_send_reward(context, chat_id, user, reward_type, 20, gauntlet_bonus, state=state)
 
     except Exception as e:
         logger.error(f"Error during reward generation: {e}", exc_info=True)
@@ -1490,7 +1492,7 @@ async def ability_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loading_message = await query.edit_message_text(f"{players[turn_index]['username']} uses *{ability_name}*!", parse_mode="Markdown")
     state["last_action_timestamp"] = datetime.datetime.utcnow().isoformat()
     await save_state(chat_id, state) # Save the lock and new charge count
-    await handle_player_action(update, context, f"[ABILITY]:{ability_name}")
+    await handle_player_action(update, context, f"[ABILITY]:{ability_name}", state)
     try: await context.bot.delete_message(chat_id=chat_id, message_id=loading_message.message_id)
     except Exception as e: logger.warning(f"Could not delete ability confirmation message: {e}")
 
@@ -1519,7 +1521,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state["is_processing_turn"] = True # <-- LOCK
     await save_state(chat_id, state)
 
-    await handle_player_action(update, context, update.message.text.strip())
+    await handle_player_action(update, context, update.message.text.strip(), state)
 
 # ───────── Main & Polling ─────────
 async def _post_init(app: Application) -> None:

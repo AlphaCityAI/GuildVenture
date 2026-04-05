@@ -689,7 +689,8 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             prompt = prompts.get_char_reward_prompt(rarity, ally_faction)
 
         await send_typing(context, chat_id)
-        response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})        try:
+        response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
+        try:
             content = json.loads(response.choices[0].message.content)
             name, background = content.get("name", f"Unnamed {reward_type.capitalize()}"), content.get("background", "No background available.")
         except Exception: 

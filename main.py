@@ -935,12 +935,14 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         else: # Ability was used
-            await send_message(context, chat_id, thread_id, f"*{current_player['username']}'s Turn:*\n{player_narrative}")
+            # Consolidate player turn into a single message
+            turn_parts = [f"*{current_player['username']}'s Turn:*\n{player_narrative}"]
         if boss_damage_raw > 0:
             adj_dmg, notes = adjust_boss_damage_for_traits(boss_damage_raw, state, current_player, action_category_for_location)
             state['boss']['hp'] -= adj_dmg
-            await send_message(context, chat_id, thread_id, f"💥 You dealt *{adj_dmg} damage* to {boss['name']}!" + ("\n" + "\n".join([f"_{n}_" for n in notes if n]) if notes else ""))
-        await send_message(context, chat_id, thread_id, f"*{boss['name']}*\n{create_bar(state['boss']['hp'], state['boss']['max_hp'])} {state['boss']['hp']}/{state['boss']['max_hp']}")
+            turn_parts.append(f"💥 You dealt *{adj_dmg} damage* to {boss['name']}!" + ("\n" + "\n".join([f"_{n}_" for n in notes if n]) if notes else ""))
+        turn_parts.append(f"*{boss['name']}*\n{create_bar(state['boss']['hp'], state['boss']['max_hp'])} {state['boss']['hp']}/{state['boss']['max_hp']}")
+        await send_message(context, chat_id, thread_id, "\n\n".join(turn_parts))
 
         # THIS IS THE FIX
         if state['boss']['hp'] <= 0:
@@ -950,7 +952,8 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
 
         await asyncio.sleep(1.5)
 
-        # Process any boss healing effects before retaliation
+        # Process any boss healing effects before retaliation and build retaliation message
+        retaliation_parts = []
         if chosen_boss_ability:
             for effect in chosen_boss_ability.get("effects", []):
                 if effect.get("type") == "heal" and effect.get("target") == "self":
@@ -959,10 +962,10 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
                         heal_amount *= 2
                     if heal_amount > 0:
                         boss['hp'] = min(boss['max_hp'], boss['hp'] + heal_amount)
-                        await send_message(context, chat_id, thread_id, f"✨ {boss['name']} regenerates *{heal_amount} HP*!")
-                        await send_message(context, chat_id, thread_id, f"*{boss['name']}*\n{create_bar(boss['hp'], boss['max_hp'])} {boss['hp']}/{boss['max_hp']}")
+                        retaliation_parts.append(f"✨ {boss['name']} regenerates *{heal_amount} HP*!\n{create_bar(boss['hp'], boss['max_hp'])} {boss['hp']}/{boss['max_hp']}")
 
-        await send_message(context, chat_id, thread_id, f"*{boss['name']}'s Retaliation ({boss_ability_choice}):*\n{boss_narrative}")
+        retaliation_parts.append(f"*{boss['name']}'s Retaliation ({boss_ability_choice}):*\n{boss_narrative}")
+        await send_message(context, chat_id, thread_id, "\n\n".join(retaliation_parts))
 
         turn_index = state.get('turn_index', 0)
         current_player_id = players[turn_index]['id'] if players and turn_index < len(players) else None

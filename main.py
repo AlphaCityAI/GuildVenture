@@ -5,12 +5,12 @@ import logging
 import random
 import re
 import base64
-import requests
+import httpx
 import copy
 from typing import Optional, Tuple, List, Dict, Any
 import datetime
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 # Import the error
 from telegram.error import RetryAfter
@@ -44,7 +44,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     logger.error("OPENAI_API_KEY missing")
     raise SystemExit("Set OPENAI_API_KEY in environment")
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 # CHAT_MODEL and IMAGE_MODEL are now imported from game_constants
 
 # ───────── Helpers ─────────
@@ -61,7 +61,7 @@ async def gpt_request(**kwargs):
     backoff = 1
     for _ in range(3):
         try:
-            return await asyncio.to_thread(client.chat.completions.create, **kwargs)
+            return await client.chat.completions.create(**kwargs)
         except Exception as e:
             logger.warning("GPT call failed, retrying in %ds: %s", backoff, e)
             await asyncio.sleep(backoff)
@@ -73,16 +73,15 @@ async def generate_image(prompt: str) -> Optional[str]:
     # Use the prompt function from prompts.py
     enhanced_prompt = prompts.get_image_prompt(prompt)
     try:
-        def _generate_and_fetch():
-            resp = client.images.generate(model=IMAGE_MODEL, prompt=enhanced_prompt, n=1, size="1024x1024", quality="medium")
-            img = resp.data[0]
-            if getattr(img, "b64_json", None): return img.b64_json
-            if getattr(img, "url", None):
-                r = requests.get(img.url, timeout=30)
+        resp = await client.images.generate(model=IMAGE_MODEL, prompt=enhanced_prompt, n=1, size="1024x1024", quality="medium")
+        img = resp.data[0]
+        if getattr(img, "b64_json", None): return img.b64_json
+        if getattr(img, "url", None):
+            async with httpx.AsyncClient() as http_client:
+                r = await http_client.get(img.url, timeout=30)
                 r.raise_for_status()
                 return base64.b64encode(r.content).decode("utf-8")
-            raise Exception("No image data in response")
-        return await asyncio.to_thread(_generate_and_fetch)
+        raise Exception("No image data in response")
     except Exception as e:
         logger.error("Image gen error: %s", e, exc_info=True)
         return None

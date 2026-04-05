@@ -373,10 +373,9 @@ async def inventory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not inventory:
         lines.append("  _Your backpack is empty._")
     
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-    
+    # Build a single combined keyboard for item management and unequip actions
+    keyboard = []
     if inventory:
-        keyboard = []
         for i, item in enumerate(inventory[:10]):
             rarity_icon = item_traits.RARITY_ICONS.get(item.get("rarity", ""), "")
             slot_icon = item_traits.get_slot_icon(item.get("slot", ""))
@@ -386,16 +385,15 @@ async def inventory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )])
         if len(inventory) > 10:
             keyboard.append([InlineKeyboardButton("📜 Show More...", callback_data="inv:more:10")])
-        await update.message.reply_text("Select an item to manage:", reply_markup=InlineKeyboardMarkup(keyboard))
     
     if any(equipped.get(slot) for slot in item_traits.ITEM_SLOTS):
-        keyboard = []
         for slot in item_traits.ITEM_SLOTS:
             if equipped.get(slot):
                 slot_icon = item_traits.get_slot_icon(slot)
                 keyboard.append([InlineKeyboardButton(f"Unequip {slot_icon} {slot}", callback_data=f"inv:unequip:{slot}")])
-        if keyboard:
-            await update.message.reply_text("Or unequip an item:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    await update.message.reply_text("\n".join(lines), reply_markup=reply_markup, parse_mode="Markdown")
 
 async def inventory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inventory button callbacks."""
@@ -421,7 +419,7 @@ async def inventory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
             keyboard = [
                 [InlineKeyboardButton("✅ Equip", callback_data=f"inv:equip:{item_index}")],
-                [InlineKeyboardButton("🗑️ Discard", callback_data=f"inv:discard:{item_index}")],
+                [InlineKeyboardButton("🗑️ Discard", callback_data=f"inv:confirm_discard:{item_index}")],
                 [InlineKeyboardButton("⬅️ Back", callback_data="inv:back")]
             ]
             await query.edit_message_text(display, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -472,6 +470,21 @@ async def inventory_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         await query.edit_message_text(f"✅ Unequipped *{item.get('name')}* from {slot} slot.", parse_mode="Markdown")
     
+    elif action == "confirm_discard":
+        try:
+            item_index = int(parts[2])
+            if item_index >= len(inventory):
+                await query.edit_message_text("Item no longer exists.")
+                return
+            item = inventory[item_index]
+            keyboard = [
+                [InlineKeyboardButton("⚠️ Yes, discard permanently", callback_data=f"inv:discard:{item_index}")],
+                [InlineKeyboardButton("⬅️ Cancel", callback_data=f"inv:view:{item_index}")]
+            ]
+            await query.edit_message_text(f"Are you sure you want to discard *{item.get('name')}*? This cannot be undone.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        except (ValueError, IndexError):
+            await query.edit_message_text("Error loading item.")
+
     elif action == "discard":
         try:
             item_index = int(parts[2])

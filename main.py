@@ -48,6 +48,13 @@ client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 # CHAT_MODEL and IMAGE_MODEL are now imported from game_constants
 
 # ───────── Helpers ─────────
+async def send_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Send a 'typing' chat action indicator so users see 'Bot is typing...'."""
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    except Exception:
+        pass  # Non-critical; don't crash if this fails
+
 def create_bar(current: int, total: int, length: int = 10) -> str:
     """Creates a generic text-based progress bar."""
     current = max(0, current)
@@ -668,8 +675,8 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             # Use prompt function
             prompt = prompts.get_char_reward_prompt(rarity, ally_faction)
 
-        response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
-        try:
+        await send_typing(context, chat_id)
+        response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})        try:
             content = json.loads(response.choices[0].message.content)
             name, background = content.get("name", f"Unnamed {reward_type.capitalize()}"), content.get("background", "No background available.")
         except Exception: 
@@ -711,6 +718,7 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             caption = f"*{name}*\n{faction_icon(ally_faction)} *Faction*: {ally_faction}\n⚡ *Level*: {level}\n\n_{background}_"
             image_prompt = f"Cyberpunk character from {ally_faction}: {name}. {background}."
 
+        await send_typing(context, chat_id)
         await send_message(context, chat_id, thread_id, "Please wait, generating visual data...")
         b64 = await generate_image(image_prompt)
         if b64:
@@ -903,6 +911,7 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
             user_prompt += f"\nPre-selected Boss Ability: {chosen_boss_ability['name']} ({chosen_boss_ability['description']}) - Effects: {json.dumps(ability_effects)}.{target_note}"
 
         try:
+            await send_typing(context, chat_id)
             response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], response_format={"type": "json_object"})
             result = json.loads(response.choices[0].message.content)
         except Exception as e: 
@@ -984,6 +993,7 @@ async def handle_player_action(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         try:
+            await send_typing(context, chat_id)
             response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], response_format={"type": "json_object"})
             result = json.loads(response.choices[0].message.content)
         except Exception as e: 
@@ -1045,6 +1055,7 @@ async def start_level(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: d
     # Use prompt function
     prompt = prompts.get_start_level_prompt(player_list, location)
 
+    await send_typing(context, chat_id)
     response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
     content = json.loads(response.choices[0].message.content)
 
@@ -1055,6 +1066,7 @@ async def start_level(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: d
     # 3. Generate an image for the scene
     image_prompt = f"A grimdark cyberpunk scene in '{location['name']}'. The scene: {opening_scene}"
 
+    await send_typing(context, chat_id)
     await send_message(context, chat_id, thread_id, "Please wait, materializing the environment...")
     b64 = await generate_image(image_prompt)
 
@@ -1193,6 +1205,7 @@ async def start_gauntlet_floor(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
     # Use prompt function
     prompt = prompts.get_start_gauntlet_prompt(boss_archetype_name, boss_archetype_data, location)
 
+    await send_typing(context, chat_id)
     resp = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
     content = json.loads(resp.choices[0].message.content)
     state["boss"] = {"name": content.get("boss_name", boss_archetype_name), "description": content.get("boss_description"), "archetype": boss_archetype_name, "abilities": boss_archetype_data["abilities"], "strengths": boss_archetype_data.get("strengths", []), "weaknesses": boss_archetype_data.get("weaknesses", []), "hp": boss_hp, "max_hp": boss_hp}
@@ -1201,6 +1214,7 @@ async def start_gauntlet_floor(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
     state["location_interaction_used"] = False # Reset on new floor
     await save_state(chat_id, state)
 
+    await send_typing(context, chat_id)
     await send_message(context, chat_id, thread_id, "Please wait, materializing the target...")
     b64 = await generate_image(f"A grimdark cyberpunk boss, {state['boss']['name']}, in '{location['name']}'. Scene: {state['boss']['description']}")
     caption = f"*Gauntlet Floor {floor}*\n📍 *{location['name']}*\n*Objective:* {state['objective']}\n\n{state['boss']['description']}\n\n_Global hazard active: {hazard['label']}_"
@@ -1235,10 +1249,12 @@ async def run_epilogue(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: 
     # Use prompt function
     prompt = prompts.get_victory_epilogue_prompt(state.get('narrative_log', [''])[-1])
 
+    await send_typing(context, chat_id)
     response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=120)
     epilogue = response.choices[0].message.content.strip()
     await send_message(context, chat_id, thread_id, epilogue)
 
+    await send_typing(context, chat_id)
     await send_message(context, chat_id, thread_id, "Please wait, immortalizing the moment...")
     b64 = await generate_image(f"A cyberpunk victory scene in Alpha City: {epilogue}")
     if b64: await context.bot.send_photo(chat_id=chat_id, photo=base64.b64decode(b64), caption="_Your victory, immortalized._", message_thread_id=thread_id, parse_mode="Markdown")
@@ -1427,6 +1443,7 @@ async def environment_action_callback(update: Update, context: ContextTypes.DEFA
     )
 
     try:
+        await send_typing(context, chat_id)
         response = await gpt_request(model=CHAT_MODEL, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], response_format={"type": "json_object"})
         result = json.loads(response.choices[0].message.content)
     except Exception as e:

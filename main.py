@@ -22,7 +22,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from replit import db
+import database as db_layer
 
 # Import constants, prompts, and external data
 from locations import LOCATIONS
@@ -180,41 +180,21 @@ def get_next_turn_index(players_list: List[dict], current_player_id: Optional[in
         return original_turn_index % len(players_list) if len(players_list) > 0 else 0
 
 # ───────── Persistence (Game State) ─────────
-def get_state_key(chat_id: int) -> str: return f"game_state_{chat_id}"
 async def load_state(chat_id: int) -> dict:
-    key = get_state_key(chat_id)
-    try:
-        j = await asyncio.to_thread(db.get, key)
-        return json.loads(j) if j else {}
-    except Exception as e:
-        logger.error("load_state fail: %s", e)
-        return {}
+    return await db_layer.load_state(chat_id)
+
 async def save_state(chat_id: int, state: dict):
-    key = get_state_key(chat_id)
-    try:
-        # Convert Enum members to their names for JSON serialization
-        if 'game_stage' in state and isinstance(state['game_stage'], GameStage):
-            state['game_stage'] = state['game_stage'].name
-        await asyncio.to_thread(db.__setitem__, key, json.dumps(state))
-    except Exception as e:
-        logger.error("save_state fail: %s", e)
+    # Convert Enum members to their names for JSON serialization
+    if 'game_stage' in state and isinstance(state['game_stage'], GameStage):
+        state['game_stage'] = state['game_stage'].name
+    await db_layer.save_state(chat_id, state)
 
 # ───────── Persistence (Player Profiles) ─────────
-def get_profile_key(user_id: int) -> str: return f"player_profile_{user_id}"
 async def load_profile(user_id: int) -> Optional[dict]:
-    key = get_profile_key(user_id)
-    try:
-        j = await asyncio.to_thread(db.get, key)
-        return json.loads(j) if j else None
-    except Exception as e:
-        logger.error("load_profile fail: %s", e)
-        return None
+    return await db_layer.load_profile(user_id)
+
 async def save_profile(user_id: int, profile: dict):
-    key = get_profile_key(user_id)
-    try:
-        await asyncio.to_thread(db.__setitem__, key, json.dumps(profile))
-    except Exception as e:
-        logger.error("save_profile fail: %s", e)
+    await db_layer.save_profile(user_id, profile)
 
 async def get_or_create_profile(user_id: int, username: str) -> dict:
     profile = await load_profile(user_id)
@@ -247,21 +227,7 @@ async def get_or_create_profile(user_id: int, username: str) -> dict:
 
 async def get_all_profiles() -> List[dict]:
     """Fetches all player profiles from the database."""
-    try:
-        # Use efficient prefix search instead of loading all keys
-        profile_keys = await asyncio.to_thread(db.prefix, "player_profile_")
-        profiles = []
-        for key in profile_keys:
-            j = await asyncio.to_thread(db.get, key)
-            if j:
-                try:
-                    profiles.append(json.loads(j))
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not decode profile for key: {key}")
-        return profiles
-    except Exception as e:
-        logger.error(f"Failed to get all profiles: {e}")
-        return []
+    return await db_layer.get_all_profiles()
 
 
 async def award_xp(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id: Optional[int], user_id: int, username: str, amount: int, reason: str):
@@ -1571,10 +1537,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_player_action(update, context, update.message.text.strip())
 
 # ───────── Main & Polling ─────────
+async def _post_init(app: Application) -> None:
+    """Called after the Application is built – initialise the DB pool."""
+    await db_layer.init_db()
+
+async def _post_shutdown(app: Application) -> None:
+    """Called when the Application shuts down – close the DB pool."""
+    await db_layer.close_db()
+
 def main():
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN: logger.error("TELEGRAM_TOKEN missing"); return
-    app = Application.builder().token(TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
     app.add_handler(CommandHandler("venture", venture))
     app.add_handler(CommandHandler("join", join_command))
     app.add_handler(CommandHandler("endgame", endgame_command))

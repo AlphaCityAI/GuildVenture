@@ -14,11 +14,12 @@ Preferred communication style: Simple, everyday language.
 
 ### Application Framework
 - **Platform:** Python-based Telegram bot using `python-telegram-bot` library
-- **Execution Environment:** Replit (async event loop already running)
+- **Hosting:** Railway (VM-based deployment)
+- **Database:** PostgreSQL (provided by Railway) via `asyncpg` async driver
 - **AI Integration:** OpenAI API for content generation and DM narration
   - Chat completions for narrative, boss generation, and combat resolution
-  - Image generation for visual content (currently encountering 400 errors)
-- **State Management:** Replit DB (key-value store) for persistent game state per chat/group
+  - Image generation for visual content
+- **State Management:** PostgreSQL with JSONB columns for persistent game state per chat/group
 
 **Design Pattern:** Event-driven architecture with callback handlers for player interactions. Game state is loaded/saved per message, enabling concurrent multi-player support across different Telegram chats.
 
@@ -67,11 +68,11 @@ Preferred communication style: Simple, everyday language.
 **Implementation:** Location data is static (defined in `locations.py`) but AI integrates them narratively during boss encounters.
 
 ### Game State Management
-- **Per-chat isolation:** Each Telegram chat maintains separate game state in Replit DB
-- **JSON serialization:** Game state stored as JSON with player stats, inventory, gauntlet progress, logs
-- **Key structure:** `game_state_{chat_id}.json` format
+- **Per-chat isolation:** Each Telegram chat maintains separate game state in PostgreSQL
+- **JSONB storage:** Game state stored as JSONB with player stats, inventory, gauntlet progress, logs
+- **Tables:** `game_states` (keyed by `chat_id`) and `player_profiles` (keyed by `user_id`)
 
-**Challenges:** No traditional database schema; all relationships maintained in nested JSON structures. This limits complex queries but simplifies deployment on Replit.
+**Architecture:** Uses PostgreSQL JSONB columns to preserve the document-oriented data model while gaining relational database reliability, connection pooling via `asyncpg`, and ACID transactions.
 
 ### AI Prompting Strategy
 - **System prompts:** Lore-aware DM persona with strict JSON response formats
@@ -93,25 +94,25 @@ Preferred communication style: Simple, everyday language.
 - **Interaction Model:** Callback queries for button interactions, message handlers for text commands
 - **Rate Limiting:** RetryAfter exception handling for Telegram API limits
 
-### Replit Infrastructure
-- **Replit DB:** Key-value database for persistent storage
-  - No schema migrations required
-  - Automatic scaling per Replit plan
-  - **Limitation:** No complex queries or indexing; all filtering done in-memory
+### Railway Infrastructure
+- **PostgreSQL:** Managed database with automatic `DATABASE_URL` injection
+  - JSONB columns for flexible schema
+  - Connection pooling via asyncpg (2–10 connections)
+  - Auto-created tables on first startup
   
 - **Environment Variables:**
+  - `DATABASE_URL`: PostgreSQL connection string (auto-provided by Railway)
   - `OPENAI_API_KEY`: Required for AI features
   - `TELEGRAM_TOKEN`: Bot authentication
   - `OPENAI_CHAT_MODEL`: Configurable chat model (default: gpt-4-turbo)
   - `OPENAI_IMAGE_MODEL`: Configurable image model (default: gpt-image-1)
 
 ### Known Issues
-1. **Event Loop Conflict:** `asyncio.run()` called when loop already running (Replit environment issue)
-2. **Image Generation Failures:** OpenAI image API returning 400 errors (model name or prompt issue)
-3. **Concurrency:** No locking mechanism for simultaneous updates to same game state
+1. **Image Generation Failures:** OpenAI image API returning 400 errors (model name or prompt issue)
+2. **Concurrency:** No locking mechanism for simultaneous updates to same game state
 
 ### Future Extensibility Considerations
-- Database migration path if moving to relational DB (player stats, inventory as tables)
+- Normalize JSONB into relational tables for complex queries (player stats, inventory as tables)
 - Webhook mode for Telegram (currently polling-based)
 - Caching layer for frequently accessed game constants
 - Rate limiting for AI API calls to control costs

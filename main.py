@@ -732,13 +732,14 @@ async def generate_and_send_reward(context: ContextTypes.DEFAULT_TYPE, chat_id: 
             caption = f"*{name}*\n{faction_icon(ally_faction)} *Faction*: {ally_faction}\n⚡ *Level*: {level}\n\n_{background}_"
             image_prompt = f"Cyberpunk character from {ally_faction}: {name}. {background}."
 
-        # Generate image first, then send image + text together in order
+        # Generate image and send image + descriptive text together in one message
         await send_typing(context, chat_id)
         b64 = await generate_image(image_prompt)
         if b64:
             img = base64.b64decode(b64)
-            await context.bot.send_photo(chat_id=chat_id, photo=img, caption=f"_{name}_", message_thread_id=thread_id, parse_mode="Markdown")
-        await send_message(context, chat_id, thread_id, caption)
+            await context.bot.send_photo(chat_id=chat_id, photo=img, caption=caption, message_thread_id=thread_id, parse_mode="Markdown")
+        else:
+            await send_message(context, chat_id, thread_id, caption)
 
     except Exception as e:
         logger.error(f"Critical error in reward generation: {e}", exc_info=True)

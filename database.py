@@ -65,10 +65,16 @@ def _ensure_pool() -> asyncpg.Pool:
 
 
 def _parse_jsonb(value) -> dict:
-    """Normalise a JSONB column value to a Python dict."""
+    """Normalise a JSONB column value to a Python dict.
+
+    asyncpg already deserializes JSONB to dicts automatically, so the
+    ``isinstance(value, str)`` branch is only a safety net for edge cases.
+    """
     if value is None:
         return {}
-    return json.loads(value) if isinstance(value, str) else value
+    if isinstance(value, dict):
+        return value
+    return json.loads(value)
 
 
 # ───────── Game State ─────────
@@ -146,4 +152,22 @@ async def get_all_profiles() -> List[dict]:
         return [_parse_jsonb(row["data"]) for row in rows if row["data"]]
     except Exception as e:
         logger.error("Failed to get all profiles: %s", e)
+        return []
+
+
+async def get_top_profiles(limit: int = 10) -> List[dict]:
+    """Fetch top player profiles sorted by highest floor and bosses defeated, DB-side."""
+    try:
+        pool = _ensure_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT data FROM player_profiles
+                   ORDER BY (data->'stats'->>'highest_floor')::int DESC,
+                            (data->'stats'->>'bosses_defeated')::int DESC
+                   LIMIT $1""",
+                limit,
+            )
+        return [_parse_jsonb(row["data"]) for row in rows if row["data"]]
+    except Exception as e:
+        logger.error("Failed to get top profiles: %s", e)
         return []

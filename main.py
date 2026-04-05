@@ -190,6 +190,7 @@ async def save_profile(user_id: int, profile: dict):
 
 async def get_or_create_profile(user_id: int, username: str) -> dict:
     profile = await load_profile(user_id)
+    needs_save = False
     if profile is None:
         profile = {
             "username": username, "level": 1, "current_xp": 0,
@@ -200,13 +201,12 @@ async def get_or_create_profile(user_id: int, username: str) -> dict:
             "inventory": [],
             "equipped_items": {"Cranial": None, "Chassis": None, "Equipment": None, "Mobility": None, "Companion": None}
         }
-        await save_profile(user_id, profile)
+        needs_save = True
     # Ensure username is up-to-date
     if profile.get("username") != username:
         profile["username"] = username
-        await save_profile(user_id, profile)
+        needs_save = True
     # Migrate old profiles that don't have inventory/equipped_items
-    needs_save = False
     if "inventory" not in profile:
         profile["inventory"] = []
         needs_save = True
@@ -306,21 +306,14 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays the top players."""
     await update.message.reply_text("📡 Accessing the Alpha City Legends network...")
-    all_profiles = await get_all_profiles()
+    top_profiles = await db_layer.get_top_profiles(10)
 
-    if not all_profiles:
+    if not top_profiles:
         await update.message.reply_text("The leaderboard is empty. Be the first legend!")
         return
 
-    # Sort by highest floor, then by bosses defeated as a tie-breaker
-    sorted_profiles = sorted(
-        all_profiles,
-        key=lambda p: (p.get('stats', {}).get('highest_floor', 0), p.get('stats', {}).get('bosses_defeated', 0)),
-        reverse=True
-    )
-
     message_lines = ["🏆 *Alpha City Legends Leaderboard* 🏆\n"]
-    for i, profile in enumerate(sorted_profiles[:10]):
+    for i, profile in enumerate(top_profiles):
         rank = i + 1
         name = profile.get('username', 'Unknown Agent')
         floor = profile.get('stats', {}).get('highest_floor', 0)

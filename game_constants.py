@@ -1,17 +1,4 @@
 import os
-from enum import Enum, auto
-from telegram import InlineKeyboardButton
-
-# ───────── Game State Enum ─────────
-class GameStage(Enum):
-    MAIN_MENU = auto()
-    SCOUTING = auto()
-    FACTION_SELECT = auto()
-    GAUNTLET = auto()
-    VICTORY = auto()
-    LEVEL_1 = auto()
-
-# ───────── OpenAI Models ─────────
 CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4-turbo")
 IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
 
@@ -92,49 +79,4 @@ HAZARDS = [
     {"category": "technology", "value": -10, "label": "Signal jamming: -10 Technology"},
     {"category": "communication", "value": -10, "label": "Data choke: -10 Communication"},
     {"category": "strength", "value": -10, "label": "Kinetic dampeners: -10 Strength"},
-]
-
-# ───────── UI Text & Keyboards ─────────
-
-INFO_COMMAND_TEXT = """
-    *Welcome to the Underbelly of Alpha City!*
-
-    Here's what you need to know to survive:
-
-    *GAME MODES*
-    - *🏆 Gauntlet*: Face a series of increasingly difficult bosses. Climb floors for better rewards, but risk losing it all. Bank your rewards after any victory.
-    - *🌍 Open Campaign*: A cooperative, narrative-driven adventure where you and your friends tackle objectives in the sprawling world of Alpha City.
-    - *🤝 Hire Help / 💎 Dig for Treasure*: Instantly roll for a new character or item without starting a full game mode.
-
-    *CORE STATS*
-    Your effectiveness is determined by your Faction's specialty:
-    - *💪 Strength*: Used for physical force, breaking objects, and direct combat.
-    - *🤫 Stealth*: Involves sneaking, hiding, and creating diversions.
-    - *💻 Technology*: Pertains to hacking, disabling security, and interfacing with machines.
-    - *🗣️ Communication*: Used for persuasion, intimidation, and negotiation.
-
-    *FACTIONS*
-    Each Faction has a starting HP and a specialty stat bonus.
-    - *🟢 Underground*: Nodewalker (Tech), Coinbroker (Comm), Glitchborn (Stealth), Chainbreaker (Strength).
-    - *🔴 Overcity*: Singularity (Tech), Overlord (Comm), Neuralife (Stealth).
-
-    *REWARDS & RARITY*
-    Items and Characters have rarities, from common to legendary:
-    ⚪️ Salvage → 🟢 Gutter-Tech → 🔵 Street Mod → 🟣 Black Market → 🟡 Node-Forged → 💥 Peerless
-
-    *COMMANDS*
-    - `/venture`: Start a new game session.
-    - `/join`: Join an active game during faction selection.
-    - `/profile`: View your character's stats and progress.
-    - `/inventory`: View and equip items. Equipped items grant passive damage bonuses and active abilities.
-    - `/leaderboard`: See the top players in Alpha City.
-    - `/info`: Display this information guide.
-    - `/endgame`: (Game owner only) Forcibly end the current adventure.
-    """
-
-MAIN_MENU_KEYBOARD_LAYOUT = [
-    [InlineKeyboardButton("🤝 Hire Help", callback_data="main:hire_help")],
-    [InlineKeyboardButton("💎 Dig for Treasure", callback_data="main:dig_treasure")],
-    [InlineKeyboardButton("🏆 Gauntlet", callback_data="main:gauntlet")],
-    [InlineKeyboardButton("🌍 Open Campaign", callback_data="main:open_campaign")]
 ]

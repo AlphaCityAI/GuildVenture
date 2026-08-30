@@ -1,173 +1,154 @@
-"""
-PostgreSQL database layer for GuildVenture.
+"""Versioned sessions and atomic, idempotent profile mutations."""
 
-Replaces the former Replit DB (key-value store) with asyncpg + PostgreSQL.
-Railway provides DATABASE_URL automatically when a PostgreSQL plugin is attached.
+from __future__ import annotations
 
-Tables
-------
-game_states      – one row per Telegram chat   (chat_id  BIGINT PK, data JSONB)
-player_profiles  – one row per Telegram user    (user_id  BIGINT PK, data JSONB)
-"""
-
-import os
 import json
-import logging
-from typing import Optional, List
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
 
 import asyncpg
 
-logger = logging.getLogger(__name__)
 
-# Module-level connection pool (initialised at startup)
-_pool: Optional[asyncpg.Pool] = None
-
-
-# ───────── Lifecycle ─────────
-
-async def init_db() -> None:
-    """Create the connection pool and ensure tables exist."""
-    global _pool
-    dsn = os.getenv("DATABASE_URL")
-    if not dsn:
-        raise RuntimeError("DATABASE_URL environment variable is not set")
-    _pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10, timeout=30)
-    async with _pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS game_states (
-                chat_id  BIGINT PRIMARY KEY,
-                data     JSONB NOT NULL DEFAULT '{}'::jsonb
-            );
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS player_profiles (
-                user_id  BIGINT PRIMARY KEY,
-                data     JSONB NOT NULL DEFAULT '{}'::jsonb
-            );
-        """)
-    logger.info("Database initialised (tables verified)")
+class PersistenceError(RuntimeError):
+    """Storage is unavailable; never substitute an empty profile."""
 
 
-async def close_db() -> None:
-    """Gracefully close the connection pool."""
-    global _pool
-    if _pool:
-        await _pool.close()
-        _pool = None
-        logger.info("Database connection pool closed")
+class StateConflict(PersistenceError):
+    """Another action changed this session. Reload before trying again."""
 
 
-def _ensure_pool() -> asyncpg.Pool:
-    """Raise early if the pool was never initialised."""
-    if _pool is None:
-        raise RuntimeError("Database not initialised – call init_db() first")
-    return _pool
+@dataclass
+class Mutation:
+    profile: dict
+    result: Any
+    applied: bool
 
 
-def _parse_jsonb(value) -> dict:
-    """Normalise a JSONB column value to a Python dict.
-
-    asyncpg already deserializes JSONB to dicts automatically, so the
-    ``isinstance(value, str)`` branch is only a safety net for edge cases.
-    """
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-    return json.loads(value)
+def _document(value) -> dict:
+    data = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(data, dict):
+        raise PersistenceError("Expected a JSON object in storage")
+    return data
 
 
-# ───────── Game State ─────────
+class Repository:
+    def __init__(self, pool):
+        self.pool = pool
 
-async def load_state(chat_id: int) -> dict:
-    try:
-        pool = _ensure_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT data FROM game_states WHERE chat_id = $1", chat_id
+    async def load_state(self, chat_id: int) -> dict:
+        try:
+            row = await self.pool.fetchrow("SELECT data, revision FROM game_states WHERE chat_id=$1", chat_id)
+            return {**_document(row["data"]), "_revision": row["revision"]} if row else {}
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError, ValueError) as exc:
+            raise PersistenceError("Cannot load session") from exc
+
+    async def save_state(self, chat_id: int, state: dict) -> None:
+        expected = state.get("_revision")
+        payload = json.dumps({k: v for k, v in state.items() if k != "_revision"})
+        try:
+            if expected is None:
+                revision = await self.pool.fetchval(
+                    """INSERT INTO game_states(chat_id,data,revision) VALUES($1,$2::jsonb,1)
+                    ON CONFLICT(chat_id) DO NOTHING RETURNING revision""",
+                    chat_id,
+                    payload,
+                )
+            else:
+                revision = await self.pool.fetchval(
+                    """UPDATE game_states SET data=$2::jsonb, revision=revision+1
+                    WHERE chat_id=$1 AND revision=$3 RETURNING revision""",
+                    chat_id,
+                    payload,
+                    expected,
+                )
+            if revision is None:
+                raise StateConflict("Session changed; use /status for current controls")
+            state["_revision"] = revision
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as exc:
+            raise PersistenceError("Cannot save session") from exc
+
+    async def load_profile(self, user_id: int) -> dict | None:
+        try:
+            value = await self.pool.fetchval("SELECT data FROM player_profiles WHERE user_id=$1", user_id)
+            return _document(value) if value is not None else None
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError, ValueError) as exc:
+            raise PersistenceError("Cannot load profile") from exc
+
+    async def mutate_profile(self, user_id: int, mutate: Callable, event_id: str | None = None) -> Mutation:
+        """Short transaction: never await providers inside the mutation callback."""
+        try:
+            async with self.pool.acquire() as conn, conn.transaction():
+                await conn.execute(
+                    "INSERT INTO player_profiles(user_id,data) VALUES($1,'{}') ON CONFLICT DO NOTHING", user_id
+                )
+                value = await conn.fetchval("SELECT data FROM player_profiles WHERE user_id=$1 FOR UPDATE", user_id)
+                profile = _document(value)
+                if event_id is not None:
+                    prior = await conn.fetchrow(
+                        "SELECT result FROM profile_events WHERE user_id=$1 AND event_id=$2", user_id, event_id
+                    )
+                    if prior:
+                        result = json.loads(prior["result"]) if isinstance(prior["result"], str) else prior["result"]
+                        return Mutation(profile, result, False)
+                result = mutate(profile)
+                await conn.execute(
+                    "UPDATE player_profiles SET data=$2::jsonb WHERE user_id=$1", user_id, json.dumps(profile)
+                )
+                if event_id is not None:
+                    await conn.execute(
+                        "INSERT INTO profile_events(user_id,event_id,result) VALUES($1,$2,$3::jsonb)",
+                        user_id,
+                        event_id,
+                        json.dumps(result),
+                    )
+                return Mutation(profile, result, True)
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as exc:
+            raise PersistenceError("Cannot update profile") from exc
+
+    async def top_profiles(self, limit: int = 10) -> list[dict]:
+        try:
+            rows = await self.pool.fetch(
+                """SELECT user_id, data->>'username' AS username,
+                CASE WHEN data->'stats'->>'highest_floor' ~ '^[0-9]{1,9}$'
+                     THEN (data->'stats'->>'highest_floor')::int ELSE 0 END AS highest_floor,
+                CASE WHEN data->'stats'->>'bosses_defeated' ~ '^[0-9]{1,9}$'
+                     THEN (data->'stats'->>'bosses_defeated')::int ELSE 0 END AS bosses_defeated
+                FROM player_profiles ORDER BY highest_floor DESC,bosses_defeated DESC,user_id ASC LIMIT $1""",
+                max(1, min(limit, 100)),
             )
-        if row and row["data"]:
-            return _parse_jsonb(row["data"])
-        return {}
-    except Exception as e:
-        logger.error("load_state fail: %s", e)
-        return {}
+            return [dict(row) for row in rows]
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as exc:
+            raise PersistenceError("Cannot load leaderboard") from exc
 
+    async def close(self):
+        await self.pool.close()
 
-async def save_state(chat_id: int, state: dict) -> None:
-    try:
-        pool = _ensure_pool()
-        payload = json.dumps(state)
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO game_states (chat_id, data)
-                   VALUES ($1, $2::jsonb)
-                   ON CONFLICT (chat_id)
-                   DO UPDATE SET data = EXCLUDED.data""",
-                chat_id, payload,
-            )
-    except Exception as e:
-        logger.error("save_state fail: %s", e)
-
-
-# ───────── Player Profiles ─────────
-
-async def load_profile(user_id: int) -> Optional[dict]:
-    try:
-        pool = _ensure_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT data FROM player_profiles WHERE user_id = $1", user_id
-            )
-        if row and row["data"]:
-            return _parse_jsonb(row["data"]) or None
-        return None
-    except Exception as e:
-        logger.error("load_profile fail: %s", e)
-        return None
-
-
-async def save_profile(user_id: int, profile: dict) -> None:
-    try:
-        pool = _ensure_pool()
-        payload = json.dumps(profile)
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO player_profiles (user_id, data)
-                   VALUES ($1, $2::jsonb)
-                   ON CONFLICT (user_id)
-                   DO UPDATE SET data = EXCLUDED.data""",
-                user_id, payload,
-            )
-    except Exception as e:
-        logger.error("save_profile fail: %s", e)
-
-
-async def get_all_profiles() -> List[dict]:
-    """Fetch every player profile (for leaderboard, etc.)."""
-    try:
-        pool = _ensure_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT data FROM player_profiles")
-        return [_parse_jsonb(row["data"]) for row in rows if row["data"]]
-    except Exception as e:
-        logger.error("Failed to get all profiles: %s", e)
-        return []
-
-
-async def get_top_profiles(limit: int = 10) -> List[dict]:
-    """Fetch top player profiles sorted by highest floor and bosses defeated, DB-side."""
-    try:
-        pool = _ensure_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT data FROM player_profiles
-                   ORDER BY (data->'stats'->>'highest_floor')::int DESC,
-                            (data->'stats'->>'bosses_defeated')::int DESC
-                   LIMIT $1""",
+    async def recent_rewards(self, user_id: int, limit=5):
+        try:
+            rows = await self.pool.fetch(
+                """SELECT result FROM profile_events WHERE user_id=$1 AND event_id LIKE 'claim:%'
+                ORDER BY created_at DESC, event_id DESC LIMIT $2""",
+                user_id,
                 limit,
             )
-        return [_parse_jsonb(row["data"]) for row in rows if row["data"]]
-    except Exception as e:
-        logger.error("Failed to get top profiles: %s", e)
-        return []
+            return [_document(row["result"]) for row in rows]
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as exc:
+            raise PersistenceError("Cannot load reward receipts") from exc
+
+
+async def connect(dsn: str | None = None) -> Repository:
+    dsn = dsn or os.getenv("DATABASE_URL")
+    if not dsn:
+        raise PersistenceError("DATABASE_URL is required")
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10, timeout=15, command_timeout=15)
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(784204601)")
+            for path in sorted((Path(__file__).parent / "migrations").glob("*.sql")):
+                await conn.execute(path.read_text(encoding="utf-8"))
+        return Repository(pool)
+    except BaseException:
+        await pool.close()
+        raise

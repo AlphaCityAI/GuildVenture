@@ -20,6 +20,11 @@ payloads, then delivers real Telegram CallbackQuery/Update objects through the
 application dispatcher. It does not invent fresh callbacks to advance a flow.
 Authorization/legacy-format tests deliberately fabricate controls where indicated.
 
+A follow-up report exposed replies leaking into other topics. Topic validation
+ran after callback acknowledgements and busy notices, while personal commands
+bypassed it entirely. The new dispatcher-level regression reproduces these
+off-topic responses against the original PR #6 commit and passes with the fix.
+
 ## Changes
 
 - Game controls now identify their lobby, preparation floor/chapter, or exact
@@ -36,6 +41,12 @@ Authorization/legacy-format tests deliberately fabricate controls where indicate
 - `/start` and `/venture` resume without silently changing menu ownership or moving
   a session to another topic. An explicit idle-menu hosting button permits a new
   host, while active runs retain their existing owner.
+- All updates outside a saved session's topic are silently ignored before replies,
+  callback acknowledgements, personal menus, AI calls, profile changes, migration,
+  or event cleanup. This includes General, busy games, restarts, and ended runs.
+  A read-only check under the chat lock prevents first-session creation races;
+  unverified topics during storage failures receive no response. Independent chats
+  remain playable, and verified in-topic action failures keep recovery feedback.
 - `/act` and `/act@BotUsername` support campaign actions in groups with privacy
   mode enabled. Empty/oversized actions, other bots' commands, wrong topics, and
   out-of-turn players cannot consume a turn or trigger an assessment request.
@@ -61,7 +72,8 @@ Authorization/legacy-format tests deliberately fabricate controls where indicate
 | Preparation | Per-player rest, shared readiness, stale controls from earlier floors, refreshed encounter loadouts, bank at camp/scouting |
 | Profile actions | Equip/talent selection, roster deployment, workshop preview and confirmation across restart, cancellation of destructive discard, salvage, receipt replay, cross-user rejection |
 | Recovery | `/status`/`/resume`, legacy expired controls, event cleanup, failed join delivery, callback queue timeout/cancellation, no run reset on reopening |
-| PostgreSQL | Real JSONB round trips and concurrent lobby/readiness flows for Gauntlet and Campaign, plus the existing migration/transaction/reward/startup tests |
+| Topic isolation | All registered commands, ordinary text, all callback families, owner/non-owner, General/named topics, idle/active/ended phases, busy/startup races, restart, and storage failures; no off-topic output or mutations |
+| PostgreSQL | Real JSONB round trips and concurrent lobby/readiness flows for Gauntlet and Campaign; persisted topic isolation across restart without migration/event side effects; existing migration/transaction/reward/startup tests |
 
 The broader domain and service suites continue to cover all equipment tiers/slots,
 AI contract validation/fallbacks, crafting resource races, progression bounds,
@@ -89,6 +101,11 @@ old button also recovers them. Smoke-test these actual Telegram interactions:
 4. Tap a previous-turn button: no second action should occur, and a fresh panel
    should appear. Bank at a victory or while scouting the next floor; each player
    should claim their own saved reward.
+5. Start a group game in a topic, then send ordinary conversation, `/status`,
+   `/profile`, and `/venture` in General and another topic. Tap any preexisting
+   controls there too. Expect complete silence and no game/profile changes,
+   including while an action is resolving. Return to the original topic and use
+   `/status` to continue. Repeat after a bot restart and `/endgame`.
 
 These tests do not contact live Telegram or paid AI endpoints and do not change
 production data. They cannot verify the deployed bot's group permissions, provider

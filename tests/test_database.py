@@ -271,3 +271,41 @@ async def test_rendered_multiplayer_lobby_survives_jsonb_roundtrips_and_concurre
     assert not rig.service.locks and not rig.service.lock_users
     # Images were enabled to test harmless changes; explicitly drain optional tasks.
     await asyncio.gather(*rig.service.tasks)
+
+
+@pytest.mark.parametrize("thread", [None, 321])
+async def test_persisted_topic_silently_blocks_other_topics_after_restart(db, rig, thread):
+    from bot_service import BotService
+    import game
+    from test_playable_flows import TelegramUI
+
+    rig.repo = db
+    rig.service = BotService(db, rig.ai, default_images=False)
+    ui = TelegramUI(rig, thread=thread)
+    await ui.command("/venture")
+    mode = ui.find(action="mode")[1]
+    state = await db.load_state(ui.chat)
+    state["schema_version"] = 2
+    game.queue_event(state, {"id": 1, "username": "Owner"}, "attempt", 25, {"bosses_attempted": 1})
+    await db.save_state(ui.chat, state)
+    profile = await db.load_profile(1)
+    await ui.restart()
+    for name in ("send_message", "send_photo", "edit_message_text", "answer_callback_query"):
+        getattr(rig.bot, name).reset_mock()
+    for outside in (999, None if thread is not None else 321):
+        # Explicit messages also exercise General's missing thread ID.
+        ui.thread = outside
+        await ui.command("hello everyone")
+        await ui.command("/venture")
+        await ui.command("/profile")
+        await ui.press(saved=(ui.message("old menu", thread=outside), mode))
+    for name in ("send_message", "send_photo", "edit_message_text", "answer_callback_query"):
+        getattr(rig.bot, name).assert_not_awaited()
+    assert await db.load_state(ui.chat) == state
+    assert await db.load_profile(1) == profile
+    # In-topic recovery still migrates and delivers the pending event once.
+    ui.thread = thread
+    await ui.command("/status")
+    assert (await db.load_state(ui.chat))["events"] == []
+    assert (await db.load_profile(1))["stats"]["bosses_attempted"] == 1
+    assert ui.latest.message_thread_id == thread and ui.latest.reply_markup

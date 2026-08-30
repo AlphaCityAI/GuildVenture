@@ -253,8 +253,9 @@ async def test_campaign_all_chapters_turns_checkpoints_and_rewards(ui, party, fa
     ui.thread = 321
     await start(ui, party, "open_campaign", faction=faction)
     original = copy.deepcopy(ui.state)
+    message_count = len(ui.messages)
     await ui.command("/venture", uid=2, thread=999)
-    assert ui.state == original and "another topic" in ui.latest.text
+    assert ui.state == original and len(ui.messages) == message_count
     await ui.command("/campaign")
     ui.rig.ai.assess = AsyncMock(
         return_value=CampaignAssessment(

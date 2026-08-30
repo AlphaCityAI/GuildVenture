@@ -53,7 +53,7 @@ Hire Help recruits allies. Deploy one with /allies. At levels 2, 5, and 10 choos
 /endgame — owner ends the run; already banked claims remain
 /help — this guide
 
-One game runs per chat, in its original topic. Equipped items refresh when the next floor or chapter starts. Rolls use +1 point per attempted floor and +1 per defeat, capped at 60; final reward rolls cap at 100. Inventory and rewards belong to the player opening their controls.
+One game runs per chat, in its original topic. Once started, the bot silently ignores all messages, commands, and buttons in other topics of that chat, including personal menus. Equipped items refresh when the next floor or chapter starts. Rolls use +1 point per attempted floor and +1 per defeat, capped at 60; final reward rolls cap at 100. Inventory and rewards belong to the player opening their controls.
 
 Boss intent is shown before your turn. Brace halves incoming damage to you; a successful counter (6+ d10) halves the published move. Both cost a turn. Ally support also costs a turn and refreshes only at the next encounter/chapter. Between floors/chapters, living players may rest once, change loadouts, and ready again. Completed chapters save XP/materials; the final chapter unlocks the run reward.
 """
@@ -100,25 +100,44 @@ class BotService(PlayerFeatures):
             context.bot, update.effective_chat.id, update.effective_message.message_thread_id, text, rows
         )
 
+    async def in_game_topic(self, update, *, require_session=False):
+        """Read the saved boundary without migrating state or delivering events."""
+        try:
+            state = await self.repo.load_state(update.effective_chat.id)
+            if not state:
+                return not require_session
+            return update.effective_message.message_thread_id == state.get("thread_id")
+        except Exception:
+            # A read failure is not permission to send an error into an unknown topic.
+            logger.exception("Cannot verify game topic for chat_id=%s; ignoring update", update.effective_chat.id)
+            return False
+
+    @staticmethod
+    async def acknowledge_callback(query):
+        try:
+            await query.answer()
+        except TelegramError:
+            pass
+
     async def handle(self, update, context):
         if update.effective_chat is None or update.effective_user is None or update.effective_message is None:
             return
         chat_id = update.effective_chat.id
         query = update.callback_query
-        # Answer immediately, before database/provider waits. All content remains
-        # untrusted until the relevant session/profile authorization below.
-        if query:
-            try:
-                await query.answer()
-            except TelegramError:
-                pass
         lock = self.locks.setdefault(chat_id, asyncio.Lock())
-        if lock.locked() and not query:
-            await self.say(update, context, "An action is being resolved in this chat. Please try /status shortly.")
-            return
         self.lock_users[chat_id] = self.lock_users.get(chat_id, 0) + 1
-        acquired = False
+        acquired = acknowledged = False
         try:
+            if lock.locked():
+                # Check before acknowledgements, busy notices, or joining the queue.
+                # During first-session creation no topic is safe until it is saved.
+                if not await self.in_game_topic(update, require_session=True):
+                    return
+                if not query:
+                    await self.say(update, context, "An action is being resolved in this chat. Please try /status shortly.")
+                    return
+                await self.acknowledge_callback(query)
+                acknowledged = True
             try:
                 async with asyncio.timeout(CALLBACK_WAIT_SECONDS):
                     await lock.acquire()
@@ -126,7 +145,13 @@ class BotService(PlayerFeatures):
             except TimeoutError:
                 await self.say(update, context, "An action is still resolving. Please try your button again shortly.")
                 return
+            # Recheck under the lock before any command, personal menu, or mutation.
+            # A first /venture can only bind its topic while holding this same lock.
+            if not await self.in_game_topic(update):
+                return
             if query:
+                if not acknowledged:
+                    await self.acknowledge_callback(query)
                 await self.callback(update, context)
             else:
                 await self.command_or_action(update, context)
@@ -205,7 +230,7 @@ class BotService(PlayerFeatures):
             return await self.say(update, context, ui.recap_text(state.get("last_recap")))
         if command in {"/start", "/venture"}:
             if state and update.effective_message.message_thread_id != state.get("thread_id"):
-                raise InvalidAction("This chat's game is in another topic. Return there to play or resume.")
+                return
             daily = await self.repo.mutate_profile(
                 user.id,
                 lambda p: profiles.daily_login(p, user.first_name, dt.datetime.now(dt.timezone.utc).date().isoformat()),
@@ -232,7 +257,7 @@ class BotService(PlayerFeatures):
         if not state:
             return await self.say(update, context, "No active game. Use /venture to start.")
         if update.effective_message.message_thread_id != state.get("thread_id"):
-            raise InvalidAction("This chat's game is in another topic. Return there to play or resume.")
+            return
         if command in {"/status", "/resume", "/settings", "/camp", "/campaign"}:
             return await self.show_status(update, context, state, recover=True)
         if command == "/join":
@@ -527,7 +552,7 @@ class BotService(PlayerFeatures):
 
     async def show_status(self, update, context, state, recover=False, fresh=False, notice=""):
         if update.effective_message.message_thread_id != state["thread_id"]:
-            raise InvalidAction("This game is in another topic. Return to its original topic to resume.")
+            return
         rows, lines = [], []
 
         def control(label, action, arg=""):

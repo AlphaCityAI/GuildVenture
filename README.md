@@ -58,6 +58,12 @@ updates use short row-lock transactions, including first-time profile creation.
   `/campaign` restores chapter progress; `/camp` restores preparation controls.
 - `/settings` shows the owner's image toggle in menu/lobby/scouting/camp phases.
   The game supports one session per chat, in its original Telegram topic.
+- Once a session exists, the bot stays silent in every other topic of that chat,
+  including General: no conversation replies, command responses, button
+  acknowledgements, busy notices, or personal menus. Use the original topic for
+  all interactions. This boundary survives restarts and `/endgame`; private chats
+  and other groups remain independent. If storage cannot verify the topic, the
+  bot logs the failure and stays silent until it can verify it again.
 - `/endgame` is owner-only. Pending reward claims remain in player profiles.
   Completed runs are banked before returning to the menu. Active fights are
   abandoned without additional victory rewards.

@@ -1,0 +1,8 @@
+[variables]
+NIXPACKS_PYTHON_VERSION = "3.12"
+NIXPACKS_PYTHON_PACKAGE_MANAGER = "uv"
+NIXPACKS_UV_VERSION = "0.12.7"
+UV_PROJECT_ENVIRONMENT = "/opt/venv"
+
+[start]
+cmd = "python main.py"

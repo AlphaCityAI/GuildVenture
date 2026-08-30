@@ -1,0 +1,29 @@
+PASS = existing defect reproduced with isolated dependencies; no live calls.
+
+test_01_daily_login_overwrites_awarded_xp (__main__.ExistingDefects.test_01_daily_login_overwrites_awarded_xp) ... ok
+test_02_first_player_closes_multiplayer_lobby (__main__.ExistingDefects.test_02_first_player_closes_multiplayer_lobby) ... ok
+test_03_join_inflates_boss_hp_without_joining (__main__.ExistingDefects.test_03_join_inflates_boss_hp_without_joining) ... ok
+test_04_all_declared_boss_traits_are_ignored (__main__.ExistingDefects.test_04_all_declared_boss_traits_are_ignored) ... ok
+test_05_blockchain_items_do_not_boost_mercantile_damage (__main__.ExistingDefects.test_05_blockchain_items_do_not_boost_mercantile_damage) ... ok
+test_06_natural_100_cannot_generate_peerless_reward (__main__.ExistingDefects.test_06_natural_100_cannot_generate_peerless_reward) ... ok
+test_07_bank_bonus_argument_has_no_effect (__main__.ExistingDefects.test_07_bank_bonus_argument_has_no_effect) ... ok
+test_08_failed_reward_is_not_recoverable_after_reset (__main__.ExistingDefects.test_08_failed_reward_is_not_recoverable_after_reset) ... ok
+test_09_recruited_ally_is_not_persisted (__main__.ExistingDefects.test_09_recruited_ally_is_not_persisted) ... ok
+test_10_roll_boost_consumed_during_cast (__main__.ExistingDefects.test_10_roll_boost_consumed_during_cast) ... ok
+test_11_invalid_model_shape_leaves_turn_locked (__main__.ExistingDefects.test_11_invalid_model_shape_leaves_turn_locked) ... ok
+test_12_old_main_menu_replaces_active_players_and_owner (__main__.ExistingDefects.test_12_old_main_menu_replaces_active_players_and_owner) ... ok
+test_13_nonparticipant_can_claim_reward_from_other_topic (__main__.ExistingDefects.test_13_nonparticipant_can_claim_reward_from_other_topic) ... ok
+test_14_old_ascend_button_skips_live_boss (__main__.ExistingDefects.test_14_old_ascend_button_skips_live_boss) ... ok
+test_15_stale_inventory_index_discards_different_item (__main__.ExistingDefects.test_15_stale_inventory_index_discards_different_item) ... ok
+test_16_environment_failure_can_leave_dead_player_active (__main__.ExistingDefects.test_16_environment_failure_can_leave_dead_player_active) ... ok
+test_17_environment_gate_not_checked_by_handler (__main__.ExistingDefects.test_17_environment_gate_not_checked_by_handler) ... ok
+test_18_open_campaign_completion_event_does_not_end_game (__main__.ExistingDefects.test_18_open_campaign_completion_event_does_not_end_game) ... ok
+test_19_database_errors_indistinguishable_from_missing_data (__main__.ExistingDefects.test_19_database_errors_indistinguishable_from_missing_data) ... ok
+test_20_boss_roll_modifier_is_not_applied (__main__.ExistingDefects.test_20_boss_roll_modifier_is_not_applied) ... ok
+test_21_ability_outside_combat_can_repeat_victory_rewards (__main__.ExistingDefects.test_21_ability_outside_combat_can_repeat_victory_rewards) ... ok
+test_22_overlapping_damage_map_duplicates_deaths (__main__.ExistingDefects.test_22_overlapping_damage_map_duplicates_deaths) ... ok
+
+----------------------------------------------------------------------
+Ran 22 tests in 1.609s
+
+OK

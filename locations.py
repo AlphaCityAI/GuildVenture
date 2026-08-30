@@ -46,7 +46,7 @@ LOCATIONS = [
     {
         "name": "The Data Morgue",
         "description": "A cold, silent necropolis of obsolete server farms, a perfect hiding place for the untraceable.",
-        "effect": {"type": "faction_modifier", "faction": ["Nodewalkers", "Glitchborn"], "category": ["technology", "stealth"], "value": 20, "narrative": "The ghost-data of the morgue responds to your unique signature."},
+        "effect": {"type": "faction_modifier", "faction": ["Nodewalker", "Glitchborn"], "category": ["technology", "stealth"], "value": 20, "narrative": "The ghost-data of the morgue responds to your unique signature."},
         "interaction": {
             "name": "Purge Server Racks", "category": "technology",
             "success_effect": {"type": "damage", "value": 25}, "failure_effect": {"type": "damage_party", "value": 5},
@@ -68,7 +68,7 @@ LOCATIONS = [
     {
         "name": "The Foundry of Defiance",
         "description": "In a geothermal-powered complex deep underground, the Foundry is where Chainbreakers are made and tech is weaponized.",
-        "effect": {"type": "faction_modifier", "faction": "Chainbreakers", "category": "strength", "value": 20, "narrative": "On your home turf, your augments hum with raw power."},
+        "effect": {"type": "faction_modifier", "faction": "Chainbreaker", "category": "strength", "value": 20, "narrative": "On your home turf, your augments hum with raw power."},
         "interaction": {
             "name": "Vent Geothermal Steam", "category": "strength",
             "success_effect": {"type": "damage", "value": 30}, "failure_effect": {"type": "damage_party", "value": 6},
@@ -79,7 +79,7 @@ LOCATIONS = [
     {
         "name": "The Oracle's Relay",
         "description": "A forgotten radio telescope complex repurposed by Nodewalkers to pierce the Overlords' data smog.",
-        "effect": {"type": "faction_modifier", "faction": "Nodewalkers", "category": "technology", "value": 20, "narrative": "The Relay amplifies your connection to the blockchain's deepest truths."},
+        "effect": {"type": "faction_modifier", "faction": "Nodewalker", "category": "technology", "value": 20, "narrative": "The Relay amplifies your connection to the blockchain's deepest truths."},
         "interaction": {
             "name": "Focus Relay Dish", "category": "technology",
             "success_effect": {"type": "damage", "value": 28}, "failure_effect": {"type": "damage_party", "value": 5},

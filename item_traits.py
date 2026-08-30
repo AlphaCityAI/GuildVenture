@@ -11,6 +11,7 @@ ITEM_SPECIALTIES = ["Umbral", "Blockchain", "Kinetic", "Enertech", "Archon", "Ne
 
 SPECIALTY_TO_DAMAGE_TYPE = {
     "Umbral": "Umbral",
+    "Blockchain": "Mercantile",
     "Mercantile": "Mercantile",
     "Kinetic": "Kinetic",
     "Enertech": "Enertech",

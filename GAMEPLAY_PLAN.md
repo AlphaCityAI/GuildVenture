@@ -49,3 +49,28 @@ needed. AI requests remain bounded by deadlines, schema limits, concurrency, and
 admission caps. Real provider quality and Telegram UX require a separate staging
 bot/database before rollout. Model replacement remains a separate maintenance
 evaluation; the deployment's configurable defaults are unchanged here.
+
+## Delivery and validation
+
+All seven requested gameplay upgrades are implemented. The local Python 3.12
+suite passes 100 tests; ten PostgreSQL tests skip without a disposable local
+database. GitHub CI passes all 110 tests on explicitly selected Python 3.11 and
+3.12 with PostgreSQL 16. Ruff, the frozen dependency lock check, and Git whitespace
+checks pass. The first complete CI run is
+[recorded here](https://github.com/drjnolen/GuildVenture/actions/runs/33316973532).
+
+Coverage includes published intent/phase consistency, AI schema rejection and
+fallbacks, partial legacy recaps, finite ally charges, effective contributions,
+talent caps, ready-loadout changes, complete chapter campaigns, blueprint
+cancel/replay/recovery, Unicode callback limits, and delayed chapter artwork.
+Database tests exercise competing craft/salvage operations, duplicate craft
+confirmations, concurrent talent choices, and atomic chapter XP/material/bond
+awards against real row locks.
+
+No live Telegram session, paid AI request, production database, merge, or
+deployment was used. Before rollout, back up the database and complete the README
+staging checklist with a separate bot/database. Review generated encounters and
+campaign continuity with real model output; unit tests do not prove creative
+quality, win rates, or production operating cost. Existing sessions/profiles
+migrate additively to schema 3; rollback still requires coordinated code/data
+recovery because older code does not understand chapter and preparation states.

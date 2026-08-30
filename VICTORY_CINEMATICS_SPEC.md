@@ -29,7 +29,7 @@ story or replay XP. Provider failure leaves the numerical report available.
 
 Reports use plain text and split at safe Telegram lengths. Fallen participants
 remain visible. Honors include Most Lethal, Field Medic, Guardian, Clutch Moment,
-and Team Support, only when their associated metric is positive. Several honors
+Team Support, and Pathfinder, only when their associated metric is positive. Several honors
 or ties can appear; no arbitrary MVP suppresses the rest of the party.
 
 ## Related gameplay

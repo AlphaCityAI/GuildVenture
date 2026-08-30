@@ -217,8 +217,10 @@ def deploy_ally(profile, ally_id):
     normalize(profile)
     if ally_id != "none" and not any(a["id"] == ally_id for a in profile["collectibles"]):
         raise InvalidAction("You do not own that ally. Open /allies.")
-    profile["active_ally_id"] = None if ally_id == "none" else ally_id
-    profile["loadout_version"] += 1
+    selected = None if ally_id == "none" else ally_id
+    if profile["active_ally_id"] != selected:
+        profile["active_ally_id"] = selected
+        profile["loadout_version"] += 1
     return profile["active_ally_id"]
 
 

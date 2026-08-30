@@ -58,6 +58,7 @@ def recap(state, title):
         ("blocked", "Guardian"),
         ("criticals", "Clutch Moment"),
         ("support", "Team Support"),
+        ("objectives", "Pathfinder"),
     ]:
         high = max((p[key] for p in participants), default=0)
         if high:

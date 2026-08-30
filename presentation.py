@@ -174,7 +174,7 @@ def recap_text(recap):
         lines.append(
             f"{p['username']} · {p['faction']}{' · fallen' if p['fallen'] else ''}\n"
             f"{p['damage']} damage · {p['healing']} healing · {p['blocked']} blocked · "
-            f"{p['support']} support actions · {p['criticals']} criticals · {p['turns']} turns\n"
+            f"{p['support']} support actions · {p['objectives']} objectives · {p['criticals']} criticals · {p['turns']} turns\n"
             f"Ally contribution: {p['ally_damage']} damage / {p['ally_healing']} healing. " + ", ".join(p["honors"])
         )
     if recap.get("streak", 0) > 1:

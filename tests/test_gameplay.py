@@ -409,6 +409,7 @@ async def test_chapter_checkpoint_recovery_rejects_stale_branch_and_uses_ai_cont
     rig.service.rng.randint = lambda lo, hi: hi
     await rig.service.handle(update(rig.bot, text="Finish the objective"), rig.context)
     assert rig.repo.states[100]["phase"] == "chapter_complete"
+    assert "Pathfinder" in rig.repo.states[100]["last_recap"]["participants"][0]["honors"]
     before = copy.deepcopy(rig.repo.profiles)
     saved = copy.deepcopy(rig.repo.states[100])
     branch = game.callback_data(saved, "chapter", "1")

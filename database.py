@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import json
+import logging
 import os
+import socket
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlsplit
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
+CONNECT_RETRY_DELAYS = (2, 4, 8, 16)
 
 
 class PersistenceError(RuntimeError):
@@ -17,6 +26,10 @@ class PersistenceError(RuntimeError):
 
 class StateConflict(PersistenceError):
     """Another action changed this session. Reload before trying again."""
+
+
+class DatabaseStartupError(PersistenceError):
+    """An actionable startup failure whose message contains no connection secrets."""
 
 
 @dataclass
@@ -138,17 +151,110 @@ class Repository:
             raise PersistenceError("Cannot load reward receipts") from exc
 
 
-async def connect(dsn: str | None = None) -> Repository:
-    dsn = dsn or os.getenv("DATABASE_URL")
+def validate_database_url(dsn: str | None = None) -> str:
+    """Check common deployment mistakes without connecting or logging the URL.
+
+    Leave asyncpg's IPv6, multi-host, query options, and TLS semantics intact.
+    Require an explicit host so a missing service reference cannot select localhost.
+    """
+    dsn = (os.getenv("DATABASE_URL", "") if dsn is None else dsn).strip()
     if not dsn:
-        raise PersistenceError("DATABASE_URL is required")
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10, timeout=15, command_timeout=15)
+        raise DatabaseStartupError("DATABASE_URL is required on the bot service.")
+    if "${" in dsn:
+        raise DatabaseStartupError(
+            "DATABASE_URL contains an unresolved variable reference. Resolve the database service reference "
+            "in the hosting environment before starting the bot. See README: Database startup troubleshooting."
+        )
+    try:
+        parsed = urlsplit(dsn)
+        query = parse_qs(parsed.query, strict_parsing=True)
+    except ValueError:
+        raise DatabaseStartupError("DATABASE_URL is malformed. Copy the provider's PostgreSQL connection URL.") from None
+    if parsed.scheme not in {"postgres", "postgresql"} or any(c.isspace() for c in dsn):
+        raise DatabaseStartupError(
+            "DATABASE_URL must be a postgres:// or postgresql:// URL without wrapping quotes or embedded whitespace."
+        )
+    if "#" in dsn or parsed.netloc.count("@") > 1:
+        raise DatabaseStartupError(
+            "DATABASE_URL contains unescaped URL delimiters. Copy the provider's URL; "
+            "percent-encode special characters in credentials instead of editing the hostname."
+        )
+    hosts = parsed.netloc.rsplit("@", 1)[-1] or query.get("host", [""])[-1]
+    if any(not host or host.startswith(":") for host in hosts.split(",")):
+        raise DatabaseStartupError("DATABASE_URL must include an explicit database hostname or host query parameter.")
+    return dsn
+
+
+def _connection_failure(exc: Exception) -> tuple[bool, str]:
+    """Classify without including driver messages, which may contain credentials."""
+    if isinstance(exc, socket.gaierror):
+        return True, (
+            "Database hostname could not be resolved (DNS). Check DATABASE_URL on the bot service and "
+            "the database's current hostname. Railway private hosts require the bot and database in the same "
+            "project/environment at runtime. See README: Database startup troubleshooting."
+        )
+    if isinstance(exc, asyncpg.InvalidAuthorizationSpecificationError):
+        return False, "Database authentication failed. Check the database credentials referenced by DATABASE_URL."
+    if isinstance(exc, asyncpg.InvalidCatalogNameError):
+        return False, "The database named by DATABASE_URL does not exist. Check the provider's connection URL."
+    if isinstance(exc, ssl.SSLError):
+        return False, "Database TLS negotiation failed. Check the provider's TLS/certificate settings; do not disable TLS."
+    if isinstance(exc, (asyncpg.ClientConfigurationError, ValueError)):
+        return False, "DATABASE_URL or PostgreSQL client options are invalid. Check the provider's connection settings."
+    if isinstance(exc, (asyncpg.CannotConnectNowError, asyncpg.TooManyConnectionsError)):
+        return True, "PostgreSQL is not accepting connections yet. Check database health and connection capacity."
+    if isinstance(exc, (asyncpg.ConnectionDoesNotExistError, asyncpg.ConnectionFailureError)):
+        return True, "The database connection was interrupted. Check database health and network reachability."
+    if isinstance(exc, OSError):
+        retry = exc.errno in {
+            None, errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
+            errno.ETIMEDOUT, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EPIPE,
+        }
+        return retry, "Database connection failed. Check the database host/port, network access, and client settings."
+    return False, "PostgreSQL rejected the connection. Check database health, access permissions, and client settings."
+
+
+async def _connect_pool(dsn: str):
+    attempts = len(CONNECT_RETRY_DELAYS) + 1
+    for attempt in range(attempts):
+        pool = None
+        try:
+            pool = asyncpg.create_pool(dsn, min_size=1, max_size=10, timeout=15, command_timeout=15)
+            await pool
+            return pool
+        except (OSError, asyncpg.PostgresError, asyncpg.InterfaceError, ValueError) as exc:
+            if pool is not None:
+                pool.terminate()
+            retry, message = _connection_failure(exc)
+            if not retry or attempt == attempts - 1:
+                raise DatabaseStartupError(
+                    f"{message} Startup stopped after {attempt + 1} connection attempt(s); polling has not started."
+                ) from None
+            delay = CONNECT_RETRY_DELAYS[attempt]
+            logger.warning("%s Attempt %d/%d; retrying in %ds.", message, attempt + 1, attempts, delay)
+            await asyncio.sleep(delay)
+        except BaseException:
+            if pool is not None:
+                pool.terminate()
+            raise
+
+
+async def connect(dsn: str | None = None) -> Repository:
+    pool = await _connect_pool(validate_database_url(dsn))
     try:
         async with pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(784204601)")
             for path in sorted((Path(__file__).parent / "migrations").glob("*.sql")):
                 await conn.execute(path.read_text(encoding="utf-8"))
+        logger.info("Database connected; startup migrations completed.")
         return Repository(pool)
+    except (OSError, asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+        pool.terminate()
+        raise DatabaseStartupError(
+            "Database connected, but startup migrations failed "
+            f"({type(exc).__name__}). Check schema permissions and database health before redeploying. "
+            "Do not reset the database. Polling has not started."
+        ) from None
     except BaseException:
-        await pool.close()
+        pool.terminate()
         raise

@@ -146,6 +146,11 @@ above. Boss archetype resistances/vulnerabilities continue to apply.
    committed lockfile with `uv sync --frozen --no-dev` and `uv run --no-sync python main.py`.
    The Nixpacks configuration selects Python 3.12 and uv's frozen install path
    using the documented [Python provider options](https://nixpacks.com/docs/providers/python).
+   Set `DATABASE_URL` on the **bot service** to the existing database's current
+   connection URL. On Railway, use a service reference such as
+   `${{Postgres.DATABASE_URL}}` (substitute the actual database service name),
+   with both services in the same project and environment. See the startup
+   troubleshooting section below before changing database endpoints.
 3. Migration 001 adds a session revision column and profile event ledger without
    deleting existing JSON. Existing recognized sessions are migrated lazily by
    the app; obsolete processing booleans are cleared during migration. Profiles
@@ -168,6 +173,50 @@ above. Boss archetype resistances/vulnerabilities continue to apply.
    JSON: the old bot does not understand new phases or pending claims. Stop the
    worker and restore a coordinated database/code backup, or perform an explicit
    forward repair. Do not remove the ledger independently of the profiles.
+
+### Database startup troubleshooting
+
+`socket.gaierror: [Errno -2] Name or service not known` means the configured
+database hostname could not be resolved. This happens **before authentication
+or migrations**; merging code cannot repair an incorrect hostname or a private
+hostname used outside its network.
+
+- On Railway, inspect the bot service's `DATABASE_URL` reference and confirm it
+  points to the existing PostgreSQL service in the same project/environment.
+  Use the service's current URL, not a copied hostname from an old deployment.
+  Railway resolves `${{Postgres.DATABASE_URL}}` in its Variables configuration;
+  the app cannot expand that reference if it is passed literally from a local
+  shell or another host. See [Railway PostgreSQL connection guidance](https://docs.railway.com/databases/postgresql).
+- A `*.railway.internal` host is reachable only within that Railway private
+  network at runtime. A worker on Replit, a local machine, or another Railway
+  project/environment cannot use it. Prefer moving the worker into the intended
+  private network; if external access is required, explicitly configure an
+  authorized public TCP endpoint for the **same database** with the provider's
+  TLS settings. Do not guess a public hostname or mix private/public ports.
+  See [Railway private network scope](https://docs.railway.com/networking/private-networking/how-it-works).
+- Keep database startup/migrations in the runtime start command, not the build.
+  This repository already does that. Confirm the database is running before
+  restarting the bot. Never paste connection URLs/passwords into logs or issues.
+- Copy the complete provider URL. Do not include surrounding quotes in a hosting
+  dashboard value; percent-encode special characters if manually assembling
+  credentials. Scheme, unresolved-reference, whitespace, and missing-host errors
+  are caught before Telegram initialization. Other driver options are validated
+  when connecting; existing URL query/TLS options are preserved.
+
+Startup now makes at most five connection attempts, with 2/4/8/16-second waits
+and a 15-second connection timeout per attempt (up to about 105 seconds total).
+Temporary DNS, refused/timed-out connections, and a starting/busy PostgreSQL
+server can recover during this window. Persistent failures stop with deployment
+advice and a nonzero exit; the hosting restart policy may start another attempt
+cycle. Authentication, invalid database/client configuration, and TLS failures
+do not retry. Failed/cancelled pools are terminated before another attempt.
+
+Migrations run only after a connection succeeds. Migration failures are reported
+separately, roll back their transaction, and stop startup without a retry loop.
+Successful startup logs `Database connected; startup migrations completed.`
+Polling does not start until database initialization succeeds. The bot never
+switches automatically to `DATABASE_PUBLIC_URL`, changes TLS settings, uses an
+in-memory replacement, or resets player data to bypass a connection failure.
 
 An action stores its session outcome and pending profile events before delivering
 messages. `/status`, `/venture`, or `/rewards` retries those events idempotently.

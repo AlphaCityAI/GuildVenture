@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import socket
+from unittest.mock import AsyncMock
 from urllib.parse import urlparse
 import uuid
 
@@ -11,6 +13,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+import database
 from database import Repository, StateConflict
 import profiles
 import gameplay_content as content
@@ -186,3 +189,52 @@ async def test_completion_event_preserves_legacy_inventory_and_awards_bond_once(
     assert profile["current_xp"] == 223 and profile["materials"] == 5
     assert profile["collectibles"][0]["bond"] == 1 and profile["inventory"][0]["name"] == "Legacy item"
     assert profile["stats"]["chapters_completed"] == 1 and profile["inventory"][0]["id"]
+
+
+async def test_real_startup_recovers_dns_then_reapplies_migration_without_losing_data(db, monkeypatch):
+    schema = await db.pool.fetchval("SELECT current_schema()")
+    create_pool = asyncpg.create_pool
+    attempts = 0
+    pools = []
+
+    async def delayed_dns(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise socket.gaierror(socket.EAI_NONAME, "Simulated deployment DNS delay")
+        return await asyncpg.connect(*args, **kwargs)
+
+    def isolated_pool(*args, **kwargs):
+        pool = create_pool(*args, connect=delayed_dns, server_settings={"search_path": schema}, **kwargs)
+        pools.append(pool)
+        return pool
+
+    monkeypatch.setattr(database.asyncpg, "create_pool", isolated_pool)
+    monkeypatch.setattr(database.asyncio, "sleep", AsyncMock())
+    repo = await database.connect(os.environ["TEST_DATABASE_URL"])
+    try:
+        assert attempts == 2 and pools[0].is_closing()
+        assert await repo.load_state(1) == {"legacy": True, "_revision": 0}
+        await repo.mutate_profile(10, lambda p: p.update(saved="after startup"), "startup-test")
+        assert (await db.load_profile(10))["saved"] == "after startup"
+    finally:
+        await repo.close()
+
+
+async def test_real_migration_permission_failure_closes_pool_and_preserves_data(db, monkeypatch):
+    schema = await db.pool.fetchval("SELECT current_schema()")
+    create_pool = asyncpg.create_pool
+    pools = []
+
+    def read_only_pool(*args, **kwargs):
+        pool = create_pool(
+            *args, server_settings={"search_path": schema, "default_transaction_read_only": "on"}, **kwargs
+        )
+        pools.append(pool)
+        return pool
+
+    monkeypatch.setattr(database.asyncpg, "create_pool", read_only_pool)
+    with pytest.raises(database.DatabaseStartupError, match="startup migrations failed.*ReadOnlySQLTransactionError"):
+        await database.connect(os.environ["TEST_DATABASE_URL"])
+    assert len(pools) == 1 and pools[0].is_closing()
+    assert await db.load_state(1) == {"legacy": True, "_revision": 0}

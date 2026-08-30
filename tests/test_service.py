@@ -139,11 +139,12 @@ async def test_flavor_failure_keeps_reserved_reward_recoverable(rig):
     assert rig.repo.profiles[1]["inventory"][0]["roll"] == reserved["roll"]
 
 
-async def test_character_reward_persists_without_adding_combat_role(rig):
+async def test_character_reward_persists_with_support_design(rig):
     reward_id = await banked(rig)
     await rig.service.handle(update(rig.bot, data=f"r:1:{reward_id}:character"), rig.context)
     assert len(rig.repo.profiles[1]["collectibles"]) == 1
     assert rig.repo.profiles[1]["collectibles"][0]["id"] == reward_id
+    assert rig.repo.profiles[1]["collectibles"][0]["support"]
 
 
 async def test_inventory_confirmation_expires_after_another_view(rig):
@@ -179,6 +180,9 @@ async def test_second_chat_responds_while_first_waits_for_ai(rig):
     await begin(rig, "open_campaign")
     await join_ready(rig)
     await click(rig, "start")
+    await click(rig, "chapter", "0")
+    await click(rig, "ready")
+    await click(rig, "start")
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def slow(*args):
@@ -203,14 +207,26 @@ async def test_campaign_completion_unlocks_banking(rig):
     await begin(rig, "open_campaign")
     await join_ready(rig)
     await click(rig, "start")
+    await click(rig, "chapter", "0")
+    await click(rig, "ready")
+    await click(rig, "start")
     rig.ai.assess = AsyncMock(
         return_value=CampaignAssessment(
             action_category="technology", skill_score=10, player_damage=0, event="objective_complete"
         )
     )
     rig.service.rng.randint = lambda low, high: high
-    await rig.service.handle(update(rig.bot, text="extract key and leave"), rig.context)
+    for index in range(3):
+        await rig.service.handle(update(rig.bot, text="extract key and leave"), rig.context)
+        assert len(rig.repo.states[100]["campaign"]["completed"]) == index + 1
+        if index < 2:
+            assert rig.repo.states[100]["phase"] == "chapter_complete"
+            await click(rig, "chapter", "1")
+            await click(rig, "ready")
+            await click(rig, "start")
     assert rig.repo.states[100]["phase"] == "victory"
+    assert rig.repo.profiles[1]["stats"]["chapters_completed"] == 3
+    assert rig.repo.profiles[1]["stats"]["campaigns_completed"] == 1
     await click(rig, "bank")
     assert rig.repo.profiles[1]["pending_rewards"]
 

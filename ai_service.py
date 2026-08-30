@@ -12,6 +12,7 @@ from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitErr
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 
+import gameplay_content as content
 from game_constants import CHAT_MODEL, IMAGE_MODEL, LORE_SUMMARY
 from prompts import (
     FLAVOR_INSTRUCTIONS,
@@ -19,6 +20,7 @@ from prompts import (
     ASSESS_INSTRUCTIONS,
     BOSS_FLAVOR_INSTRUCTIONS,
     NARRATE_INSTRUCTIONS,
+    GAMEPLAY_INSTRUCTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,7 +84,7 @@ class AIService:
         self.usage[kind] += 1
         return True
 
-    async def json_request(self, instruction, data, schema):
+    async def json_request(self, instruction, data, schema, max_tokens=450):
         if self.client is None or not self.admit("text"):
             return None
         # Queueing time is included in the deadline; a provider outage must not
@@ -93,10 +95,17 @@ class AIService:
                     try:
                         response = await self.client.chat.completions.create(
                             model=self.chat_model,
-                            max_tokens=450,
+                            max_tokens=min(max_tokens, 1800),
                             response_format={"type": "json_object"},
                             messages=[
-                                {"role": "system", "content": instruction + "\nReturn only JSON.\n" + LORE_SUMMARY},
+                                {
+                                    "role": "system",
+                                    "content": instruction
+                                    + "\nReturn only JSON matching this schema:\n"
+                                    + json.dumps(schema.model_json_schema())
+                                    + "\n"
+                                    + LORE_SUMMARY,
+                                },
                                 {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
                             ],
                         )
@@ -135,7 +144,13 @@ class AIService:
     async def assess(self, state, action):
         return await self.json_request(
             ASSESS_INSTRUCTIONS,
-            {"objective": state["objective"], "history": state.get("narrative_log", []), "action": action[:1000]},
+            {
+                "objective": state["objective"],
+                "history": state.get("narrative_log", []),
+                "action": action[:1000],
+                "campaign": state.get("campaign", {}).get("title"),
+                "approach": state.get("chapter_approach"),
+            },
             CampaignAssessment,
         )
 
@@ -151,6 +166,93 @@ class AIService:
             NARRATE_INSTRUCTIONS,
             {"resolved_event": outcome},
             Narrative,
+        )
+
+    async def encounter(self, state):
+        return await self.json_request(
+            GAMEPLAY_INSTRUCTIONS + " Design a fresh boss fight. Moves repeat in the supplied order. "
+            "Each move has an honest telegraph and a category players can use to weaken it. "
+            "Include a damaging move. Only healing targets self; party effects have power <=4. "
+            "Make phase two distinctive without inventing effects outside the schema.",
+            {
+                "boss": state["boss"],
+                "location": state["location"],
+                "floor": state["gauntlet_level"],
+                "party": [
+                    {"faction": p["faction"], "ally": p.get("ally", {}).get("name") if p.get("ally") else None}
+                    for p in state["players"]
+                ],
+                "variation": state["run_id"],
+            },
+            content.EncounterDesign,
+            1400,
+        )
+
+    async def ally(self, traits):
+        return await self.json_request(
+            GAMEPLAY_INSTRUCTIONS + " Create a recruit and one distinctive support skill. "
+            "Strike, heal, or focus; value 1-6. It costs the owner's turn and has limited uses. "
+            "Do not promise passive powers, resurrection, or extra turns.",
+            traits,
+            content.AllyDesign,
+            600,
+        )
+
+    async def talents(self, profile, milestone):
+        return await self.json_request(
+            GAMEPLAY_INSTRUCTIONS + " Offer three different talent kinds for this career milestone. "
+            "Vitality adds max HP; precision adds twice its value in roll points; restoration adds healing; force adds damage. "
+            "Combined caps are HP +6, roll points +10, healing +3, damage +2. Describe only the declared benefit.",
+            {"milestone": milestone, "chosen": profile.get("talents", []), "username": profile["username"]},
+            content.TalentOffers,
+            800,
+        )
+
+    async def forge(self, item, target_rarity):
+        return await self.json_request(
+            GAMEPLAY_INSTRUCTIONS
+            + " Design an upgrade for this item. Keep the slot; choose a specialty and a new ability. "
+            "The engine scales the skill's base value by rarity and supplies charges. Do not invent extra effects or costs.",
+            {"source": item, "target_rarity": target_rarity},
+            content.ForgeDesign,
+            650,
+        )
+
+    async def campaign(self, players, location, variation):
+        return await self.json_request(
+            GAMEPLAY_INSTRUCTIONS
+            + " Author a connected three-chapter campaign with escalating, achievable objectives. "
+            "Each chapter offers two meaningfully different approaches. Future chapters should follow naturally from earlier goals.",
+            {"party": players, "location": location, "variation": variation},
+            content.CampaignPlan,
+            1800,
+        )
+
+    async def chapter(self, state, approach):
+        campaign = state["campaign"]
+        return await self.json_request(
+            GAMEPLAY_INSTRUCTIONS + " Develop the next chapter from the chosen approach and the saved outcomes. "
+            "Preserve the campaign's continuity and this chapter's role in the outline. Make the objective achievable.",
+            {
+                "title": campaign["title"],
+                "premise": campaign["premise"],
+                "completed": campaign["completed"],
+                "next_outline": campaign["chapters"][campaign["index"] + 1],
+                "approach": approach,
+                "recent_events": state.get("narrative_log", []),
+            },
+            content.Chapter,
+            850,
+        )
+
+    async def victory(self, recap):
+        return await self.json_request(
+            GAMEPLAY_INSTRUCTIONS + " Celebrate this saved outcome in a short cinematic scene. "
+            "Use the actual boss, factions, and recorded contributions. Include fallen participants respectfully. "
+            "Do not invent contributions, numbers, loot, titles, or mechanical rewards.",
+            recap,
+            content.VictoryStory,
+            500,
         )
 
     async def image(self, prompt):

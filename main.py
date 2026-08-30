@@ -27,6 +27,7 @@ COMMANDS = [
     ("craft", "Workshop preview and materials"),
     ("recap", "Last encounter contributions"),
     ("campaign", "Chapter progress and objective"),
+    ("act", "Describe your campaign action"),
     ("camp", "Preparation and readiness"),
     ("rewards", "Claim rewards or resend receipts"),
     ("leaderboard", "Top gauntlet runs"),

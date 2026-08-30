@@ -25,12 +25,13 @@ from profiles import InvalidAction
 from player_features import PlayerFeatures
 
 logger = logging.getLogger(__name__)
+CALLBACK_WAIT_SECONDS = 3
 
 HELP = """Welcome to Alpha City.
 
 Gauntlet: choose a route, form a party, ready up, then the owner starts. Use ability buttons on your turn. After victory the owner can ascend or bank a reward for each participant.
 
-Open Campaign: form a party and type an action on your turn. The game resolves a skill roll; completing the objective unlocks rewards.
+Open Campaign: form a party and describe an action on your turn. In groups, send /act followed by your action (or reply to the bot) so Telegram privacy mode can deliver it. The game resolves a skill roll; completing the objective unlocks rewards.
 
 AI designs boss moves, campaign chapters, ally skills, talents, crafting blueprints, and victory scenes. Published effects and resource costs are saved before use.
 Hire Help recruits allies. Deploy one with /allies. At levels 2, 5, and 10 choose a talent with /progression. Dig for Treasure creates equipment.
@@ -45,13 +46,14 @@ Hire Help recruits allies. Deploy one with /allies. At levels 2, 5, and 10 choos
 /craft — saved upgrade blueprint and material balance
 /recap — factual contributions from the last completed encounter
 /campaign — chapter progress and current objective
+/act <action> — take your campaign turn; works with group privacy mode
 /camp — current preparation controls
 /rewards — claim pending rewards, even from ended runs
 /settings — owner presentation options between fights
 /endgame — owner ends the run; already banked claims remain
 /help — this guide
 
-One game runs per chat, in its original topic. Equipped items refresh when the next floor or chapter starts. Rolls use +1 point per attempted floor and +1 per defeat, capped at 60; final reward rolls cap at 100. Inventory and rewards belong to the player opening their controls.
+One game runs per chat, in its original topic. Once started, the bot silently ignores all messages, commands, and buttons in other topics of that chat, including personal menus. Equipped items refresh when the next floor or chapter starts. Rolls use +1 point per attempted floor and +1 per defeat, capped at 60; final reward rolls cap at 100. Inventory and rewards belong to the player opening their controls.
 
 Boss intent is shown before your turn. Brace halves incoming damage to you; a successful counter (6+ d10) halves the published move. Both cost a turn. Ally support also costs a turn and refreshes only at the next encounter/chapter. Between floors/chapters, living players may rest once, change loadouts, and ready again. Completed chapters save XP/materials; the final chapter unlocks the run reward.
 """
@@ -63,6 +65,7 @@ class BotService(PlayerFeatures):
         self.rng = rng or random.Random()
         self.default_images, self.free_roll_cooldown = default_images, free_roll_cooldown
         self.locks = {}
+        self.lock_users = {}
         self.panels = {}
         self.inventory_views = OrderedDict()
         self.personal_views = OrderedDict()
@@ -97,28 +100,61 @@ class BotService(PlayerFeatures):
             context.bot, update.effective_chat.id, update.effective_message.message_thread_id, text, rows
         )
 
+    async def in_game_topic(self, update, *, require_session=False):
+        """Read the saved boundary without migrating state or delivering events."""
+        try:
+            state = await self.repo.load_state(update.effective_chat.id)
+            if not state:
+                return not require_session
+            return update.effective_message.message_thread_id == state.get("thread_id")
+        except Exception:
+            # A read failure is not permission to send an error into an unknown topic.
+            logger.exception("Cannot verify game topic for chat_id=%s; ignoring update", update.effective_chat.id)
+            return False
+
+    @staticmethod
+    async def acknowledge_callback(query):
+        try:
+            await query.answer()
+        except TelegramError:
+            pass
+
     async def handle(self, update, context):
         if update.effective_chat is None or update.effective_user is None or update.effective_message is None:
             return
         chat_id = update.effective_chat.id
         query = update.callback_query
-        # Answer immediately, before database/provider waits. All content remains
-        # untrusted until the relevant session/profile authorization below.
-        if query:
-            try:
-                await query.answer()
-            except TelegramError:
-                pass
         lock = self.locks.setdefault(chat_id, asyncio.Lock())
-        if lock.locked():
-            await self.say(update, context, "An action is being resolved in this chat. Please try /status shortly.")
-            return
+        self.lock_users[chat_id] = self.lock_users.get(chat_id, 0) + 1
+        acquired = acknowledged = False
         try:
-            async with lock:
-                if query:
-                    await self.callback(update, context)
-                else:
-                    await self.command_or_action(update, context)
+            if lock.locked():
+                # Check before acknowledgements, busy notices, or joining the queue.
+                # During first-session creation no topic is safe until it is saved.
+                if not await self.in_game_topic(update, require_session=True):
+                    return
+                if not query:
+                    await self.say(update, context, "An action is being resolved in this chat. Please try /status shortly.")
+                    return
+                await self.acknowledge_callback(query)
+                acknowledged = True
+            try:
+                async with asyncio.timeout(CALLBACK_WAIT_SECONDS):
+                    await lock.acquire()
+                    acquired = True
+            except TimeoutError:
+                await self.say(update, context, "An action is still resolving. Please try your button again shortly.")
+                return
+            # Recheck under the lock before any command, personal menu, or mutation.
+            # A first /venture can only bind its topic while holding this same lock.
+            if not await self.in_game_topic(update):
+                return
+            if query:
+                if not acknowledged:
+                    await self.acknowledge_callback(query)
+                await self.callback(update, context)
+            else:
+                await self.command_or_action(update, context)
         except InvalidAction as exc:
             await self.say(update, context, str(exc))
         except StateConflict:
@@ -140,9 +176,13 @@ class BotService(PlayerFeatures):
                 "This action could not finish. Use /status or /rewards to recover; no turn lock remains.",
             )
         finally:
-            # Busy requests never wait on this lock, so it can be removed safely.
-            if not lock.locked():
+            if acquired:
+                lock.release()
+            self.lock_users[chat_id] -= 1
+            # Keep the same lock until both its holder and queued callbacks finish.
+            if not self.lock_users[chat_id]:
                 self.locks.pop(chat_id, None)
+                self.lock_users.pop(chat_id, None)
 
     async def command_or_action(self, update, context):
         text = update.effective_message.text or ""
@@ -189,6 +229,8 @@ class BotService(PlayerFeatures):
         if command == "/recap":
             return await self.say(update, context, ui.recap_text(state.get("last_recap")))
         if command in {"/start", "/venture"}:
+            if state and update.effective_message.message_thread_id != state.get("thread_id"):
+                return
             daily = await self.repo.mutate_profile(
                 user.id,
                 lambda p: profiles.daily_login(p, user.first_name, dt.datetime.now(dt.timezone.utc).date().isoformat()),
@@ -197,7 +239,7 @@ class BotService(PlayerFeatures):
                 await self.say(
                     update, context, f"Daily login: +{daily.result['xp']} XP. Level {daily.result['level']}."
                 )
-            if not state or state["phase"] == "menu":
+            if not state:
                 state = game.new_state(user.id, update.effective_message.message_thread_id, state)
                 state["settings"]["images"] = (
                     state["settings"].get("images", self.default_images)
@@ -211,28 +253,37 @@ class BotService(PlayerFeatures):
                     context,
                     "Welcome! Start a solo or cooperative game below. Use /help for the rules, /inventory for equipment, and /status to resume.",
                 )
-            return await self.show_status(update, context, state)
+            return await self.show_status(update, context, state, fresh=True)
         if not state:
             return await self.say(update, context, "No active game. Use /venture to start.")
         if update.effective_message.message_thread_id != state.get("thread_id"):
-            raise InvalidAction("This chat's game is in another topic. Return there to play or resume.")
+            return
         if command in {"/status", "/resume", "/settings", "/camp", "/campaign"}:
             return await self.show_status(update, context, state, recover=True)
         if command == "/join":
             if state["phase"] != "lobby":
                 raise InvalidAction("Joining is available in the faction lobby only. The current boss is unchanged.")
-            return await self.show_status(update, context, state)
+            return await self.show_status(update, context, state, fresh=True)
         if command == "/endgame":
             game.require_owner(state, user.id)
             if state["phase"] in {"victory", "defeat"} or (
-                state["phase"] == "preparation" and state["game_mode"] == "gauntlet"
+                state["phase"] in {"preparation", "scout"}
+                and state["game_mode"] == "gauntlet"
+                and state["gauntlet_bonus_defeated"] > 0
             ):
                 await self.bank(chat_id, state)
             state = game.new_state(user.id, state["thread_id"], state)
             await self.commit(chat_id, state)
             await self.say(update, context, "Run ended. Earned pending rewards remain available through /rewards.")
             return await self.show_status(update, context, state)
-        if command.startswith("/"):
+        if command == "/act":
+            if state["phase"] != "campaign":
+                raise InvalidAction("/act is for an active campaign turn. Use /status for this game's controls.")
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                raise InvalidAction("Describe your action after /act, for example: /act hack the security relay")
+            text = parts[1].strip()
+        elif command.startswith("/"):
             return await self.say(update, context, "Unknown command. Use /help for available commands.")
         if state["phase"] == "combat":
             return await self.say(
@@ -243,6 +294,7 @@ class BotService(PlayerFeatures):
         game.require_actor(state, user.id)
         if not text.strip() or len(text) > 1000:
             raise InvalidAction("Please describe your action in 1–1,000 characters.")
+        await self.say(update, context, f"Resolving {user.first_name}'s campaign action with the narrator…")
         assessment = await self.ai.assess(state, text)
         if assessment is None:
             return await self.say(
@@ -251,7 +303,7 @@ class BotService(PlayerFeatures):
         result = game.resolve_campaign(state, user.id, text, assessment.model_dump(), self.rng)
         await self.commit(chat_id, state)
         await self.send_result(update, context, result, state)
-        await self.show_status(update, context, state)
+        await self.show_status(update, context, state, fresh=True)
 
     async def callback(self, update, context):
         data = update.callback_query.data or ""
@@ -269,9 +321,17 @@ class BotService(PlayerFeatures):
             raise InvalidAction("These controls have expired. Use /venture.")
         if state.get("events"):
             await self.flush_events(chat_id, state)
-            raise InvalidAction("Saved progress was recovered. Use /status for fresh controls.")
-        action, argument = game.validate_callback(state, data, user.id, update.effective_message.message_thread_id)
-        if action == "mode":
+        try:
+            action, argument = game.validate_callback(state, data, user.id, update.effective_message.message_thread_id)
+        except game.StaleControl as exc:
+            return await self.show_status(update, context, state, fresh=True, notice=str(exc))
+        notice = ""
+        if action == "refresh":
+            return await self.show_status(update, context, state, recover=True)
+        if action == "host":
+            state = game.new_state(user.id, state["thread_id"], state)
+            notice = f"{user.first_name} is hosting the next venture. Choose Gauntlet or Open Campaign."
+        elif action == "mode":
             if argument not in {"gauntlet", "open_campaign", "hire_help", "dig_treasure"}:
                 raise InvalidAction("Unknown game mode.")
             if argument in {"hire_help", "dig_treasure"}:
@@ -293,24 +353,40 @@ class BotService(PlayerFeatures):
         elif action == "faction":
             if argument not in FACTIONS:
                 raise InvalidAction("Unknown faction.")
-            rows = [[ui.button("Choose this faction", game.callback_data(state, "choose", argument))]]
+            rows = [
+                [ui.button("Choose this faction", game.callback_data(state, "choose", argument))],
+                [ui.button("Back to party", game.callback_data(state, "refresh"))],
+            ]
             return await self.say(update, context, ui.faction_text(argument, ABILITIES[argument]), rows)
         elif action == "choose":
-            if any(p["id"] == user.id for p in state["players"]):
+            player = next((p for p in state["players"] if p["id"] == user.id), None)
+            if player and player["faction"] != argument:
                 raise InvalidAction("You already joined. Leave the lobby first to change faction.")
-            state["players"].append(game.make_player(user.id, user.first_name, argument, await self.profile(user)))
+            if not player:
+                state["players"].append(game.make_player(user.id, user.first_name, argument, await self.profile(user)))
+            notice = f"{user.first_name} joined as {argument}. Tap Ready below; the owner can then start, even with one player."
         elif action == "ready":
             player = next((p for p in state["players"] if p["id"] == user.id), None)
             if player is None:
                 raise InvalidAction("Choose a faction before readying up.")
-            player["ready"] = not player["ready"]
+            if argument not in {"", "0", "1"}:
+                raise InvalidAction("Invalid readiness choice. Use /status.")
+            # Old numeric controls used a toggle; newly issued buttons set a value.
+            player["ready"] = argument == "1" if argument else not player["ready"]
             if player["ready"]:
                 player["ready_version"] = (await self.profile(user))["loadout_version"]
+            notice = f"{user.first_name} is {'ready' if player['ready'] else 'not ready'}."
         elif action == "leave":
             state["players"] = [p for p in state["players"] if p["id"] != user.id]
+            notice = f"{user.first_name} left the party. Choose a faction to rejoin."
         elif action == "start":
             if not state["players"] or not all(p["ready"] for p in state["players"]):
-                raise InvalidAction("At least one player must join, and everyone must be ready.")
+                notice = (
+                    "Choose a faction, confirm it, then tap Ready. One ready player is enough for solo play."
+                    if not state["players"]
+                    else "Waiting for Ready: " + ", ".join(p["username"] for p in state["players"] if not p["ready"])
+                )
+                return await self.show_status(update, context, state, fresh=True, notice=notice)
             loadouts = await self.participant_profiles(state)
             changed = [
                 p
@@ -326,7 +402,8 @@ class BotService(PlayerFeatures):
                     context,
                     "Loadouts changed: " + ", ".join(p["username"] for p in changed) + ". Please ready again.",
                 )
-                return await self.show_status(update, context, state)
+                return await self.show_status(update, context, state, fresh=True)
+            await self.say(update, context, "Party ready. Preparing the next encounter or chapter; controls will follow…")
             if state["game_mode"] == "gauntlet":
                 await self.prepare_floor(state, loadouts)
             else:
@@ -335,7 +412,7 @@ class BotService(PlayerFeatures):
             notice = game.rest(state, user.id)
             await self.commit(chat_id, state)
             await self.say(update, context, notice)
-            return await self.show_status(update, context, state)
+            return await self.show_status(update, context, state, fresh=True)
         elif action == "chapter":
             await self.advance_chapter(state, argument)
         elif action == "boss":
@@ -358,7 +435,7 @@ class BotService(PlayerFeatures):
                 )
             await self.commit(chat_id, state)
             await self.send_result(update, context, result, state)
-            return await self.show_status(update, context, state)
+            return await self.show_status(update, context, state, fresh=True)
         elif action == "continue":
             if state["game_mode"] != "gauntlet":
                 raise InvalidAction("This campaign is complete. Bank your reward.")
@@ -366,15 +443,17 @@ class BotService(PlayerFeatures):
             game.scout(state, self.rng)
         elif action == "bank":
             await self.bank(chat_id, state)
-            return await self.show_status(update, context, state)
+            return await self.show_status(update, context, state, fresh=True)
         elif action == "reset":
             if state["phase"] in {"victory", "defeat"}:
                 await self.bank(chat_id, state)
             state = game.new_state(user.id, state["thread_id"], state)
         elif action == "images":
-            state["settings"]["images"] = not state["settings"]["images"]
+            if argument not in {"", "0", "1"}:
+                raise InvalidAction("Invalid image setting. Use /settings.")
+            state["settings"]["images"] = argument == "1" if argument else not state["settings"]["images"]
         await self.commit(chat_id, state)
-        await self.show_status(update, context, state)
+        await self.show_status(update, context, state, fresh=True, notice=notice)
         if action in {"start", "chapter"} and state["phase"] in {"combat", "campaign"}:
             self.schedule_scene(context.bot, chat_id, copy.deepcopy(state))
 
@@ -401,6 +480,7 @@ class BotService(PlayerFeatures):
     async def send_result(self, update, context, result, state=None):
         # The full turn is already persisted. Failed narration cannot roll back
         # HP, consume a second charge, or leave a durable processing lock.
+        await self.say(update, context, result)
         if state and state["phase"] in {"victory", "chapter_complete"} and state.get("last_recap"):
             recap = state["last_recap"]
             if not recap.get("story"):
@@ -408,9 +488,10 @@ class BotService(PlayerFeatures):
                 if story:
                     recap["story"] = story.text
                     await self.commit(update.effective_chat.id, state)
-            return await self.say(update, context, result)
+            return
         narrative = await self.ai.narrate(result)
-        await self.say(update, context, result + ("\n\n" + narrative.text if narrative else ""))
+        if narrative:
+            await self.say(update, context, narrative.text)
 
     async def prepare_campaign(self, state, loadouts=None):
         from locations import LOCATIONS
@@ -454,12 +535,12 @@ class BotService(PlayerFeatures):
         game.enter_preparation(state)
 
     async def bank(self, chat_id, state):
-        preparing_gauntlet = (
-            state["phase"] == "preparation"
+        between_floors = (
+            state["phase"] in {"preparation", "scout"}
             and state["game_mode"] == "gauntlet"
             and state["gauntlet_bonus_defeated"] > 0
         )
-        if state["phase"] not in {"victory", "defeat"} and not preparing_gauntlet:
+        if state["phase"] not in {"victory", "defeat"} and not between_floors:
             raise InvalidAction("No completed run is ready to bank.")
         seen = set()
         for player in state["players"] + state["dead_players"]:
@@ -469,9 +550,9 @@ class BotService(PlayerFeatures):
         state["phase"] = "rewards"
         await self.commit(chat_id, state)
 
-    async def show_status(self, update, context, state, recover=False):
+    async def show_status(self, update, context, state, recover=False, fresh=False, notice=""):
         if update.effective_message.message_thread_id != state["thread_id"]:
-            raise InvalidAction("This game is in another topic. Return to its original topic to resume.")
+            return
         rows, lines = [], []
 
         def control(label, action, arg=""):
@@ -481,7 +562,8 @@ class BotService(PlayerFeatures):
         if phase == "menu":
             lines = [
                 "Alpha City — choose your next venture.",
-                "The player who opened this menu controls the game mode.",
+                "The host chooses Gauntlet or Open Campaign. Anyone can take the host role while this menu is idle.",
+                "Hire Help and Dig for Treasure award a personal roll to the player who taps them.",
             ]
             rows = [
                 [control("Gauntlet", "mode", "gauntlet"), control("Open Campaign", "mode", "open_campaign")],
@@ -489,6 +571,7 @@ class BotService(PlayerFeatures):
                     control("Hire Help (ally)", "mode", "hire_help"),
                     control("Dig for Treasure", "mode", "dig_treasure"),
                 ],
+                [control("Host a new venture", "host")],
             ]
         elif phase == "scout":
             lines = [f"Scouting — Floor {state['gauntlet_level']}"]
@@ -497,6 +580,8 @@ class BotService(PlayerFeatures):
             lines += [f"{route['name']}: {route['blurb']}" for route in GAUNTLET_ROUTES.values()]
             rows = [[control(route["name"], "route", key)] for key, route in GAUNTLET_ROUTES.items()]
             lines.append("Owner chooses the route. Equipped items refresh before the next floor.")
+            if state["gauntlet_bonus_defeated"] > 0:
+                rows.append([control("Bank instead (owner)", "bank")])
         elif phase == "lobby":
             lines = ["Party lobby — choose a faction to preview its abilities."]
             lines += [
@@ -509,7 +594,8 @@ class BotService(PlayerFeatures):
             factions = list(FACTIONS)
             rows = [[control(f, "faction", f) for f in factions[i : i + 2]] for i in range(0, len(factions), 2)]
             rows += [
-                [control("Ready / Not ready", "ready"), control("Leave lobby", "leave")],
+                [control("Ready", "ready", "1"), control("Not ready", "ready", "0")],
+                [control("Leave lobby", "leave")],
                 [control("Start (owner)", "start")],
             ]
         elif phase == "preparation":
@@ -535,7 +621,8 @@ class BotService(PlayerFeatures):
                 for p in state["players"]
             ]
             rows = [
-                [control("Rest once", "rest"), control("Ready / Not ready", "ready")],
+                [control("Rest once", "rest")],
+                [control("Ready", "ready", "1"), control("Not ready", "ready", "0")],
                 [control("Start (owner)", "start")],
             ]
             if state["game_mode"] == "gauntlet":
@@ -581,8 +668,13 @@ class BotService(PlayerFeatures):
             if state["players"]:
                 actor = state["players"][state["turn_index"]]
                 lines.append(
-                    f"Turn: {actor['username']} — {'choose an ability' if phase == 'combat' else 'type your action'}."
+                    f"Turn: {actor['username']} — {'choose an ability' if phase == 'combat' else 'send /act followed by your action'}."
                 )
+                if phase == "campaign":
+                    lines.append(
+                        "Example: /act hack the security relay. In groups with several bots, use "
+                        f"/act@{context.bot.username} followed by your action. You can also reply to this message."
+                    )
                 bonus = state["active_roll_bonuses"].get(str(actor["id"]), 0)
                 if bonus:
                     lines.append(f"Next eligible roll: {bonus:+} bonus points (10 points = 1 d10 step).")
@@ -636,8 +728,10 @@ class BotService(PlayerFeatures):
             rows.append([control(f"Images: {'on' if state['settings']['images'] else 'off'} (owner)", "images")])
         if recover and state.get("last_result"):
             await self.say(update, context, "Last saved action:\n" + state["last_result"])
+        if notice:
+            lines.insert(0, notice)
         key = (update.effective_chat.id, state["run_id"])
-        previous = None if recover else self.panels.get(key)
+        previous = None if recover or fresh else self.panels.get(key)
         message = await ui.panel(
             context.bot, update.effective_chat.id, state["thread_id"], "\n\n".join(lines), rows, previous
         )
@@ -691,7 +785,7 @@ class BotService(PlayerFeatures):
         saved = await self.repo.mutate_profile(user.id, reserve, event_id)
         await self.commit(update.effective_chat.id, state)
         await self.claim(update, context, saved.result["id"], saved.result["types"][0])
-        await self.show_status(update, context, state)
+        await self.show_status(update, context, state, fresh=True)
 
     async def show_rewards(self, update, context, profile):
         uid = update.effective_user.id

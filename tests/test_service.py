@@ -97,6 +97,7 @@ async def banked(rig):
 
 async def test_each_player_has_independent_durable_claim(rig):
     reward_id = await banked(rig)
+    rig.ai.flavor = AsyncMock(return_value=None)
     await rig.service.handle(update(rig.bot, uid=2, data=f"r:1:{reward_id}:item"), rig.context)
     assert rig.repo.profiles[1]["inventory"] == []
     await rig.service.handle(update(rig.bot, data=f"r:1:{reward_id}:item"), rig.context)
@@ -105,6 +106,7 @@ async def test_each_player_has_independent_durable_claim(rig):
     profile = copy.deepcopy(rig.repo.profiles[1])
     await rig.service.handle(update(rig.bot, data=f"r:1:{reward_id}:character"), rig.context)
     assert rig.repo.profiles[1] == profile
+    assert rig.ai.flavor.await_count == 1  # Replayed claims reuse their stored receipt.
     await rig.service.handle(update(rig.bot, text="/endgame"), rig.context)
     assert len(rig.repo.profiles[2]["pending_rewards"]) == 1
 

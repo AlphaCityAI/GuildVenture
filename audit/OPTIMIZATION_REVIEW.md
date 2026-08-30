@@ -2,6 +2,10 @@
 
 Reviewed August 29, 2026 against commit `2451f1485e9934efca7ff3d4d46f606e53554559`.
 
+> Historical audit of the base revision. Implementation and verification are
+> documented in [the implementation plan](../IMPLEMENTATION_PLAN.md) and
+> [README](../README.md). Findings below describe the code before those fixes.
+
 The highest-return work is to make the existing game rules, multiplayer flow, and rewards dependable, then remove AI generation from the critical interaction path. This is an audit, not an application rewrite. No application source, dependencies, deployment, or production data were changed.
 
 **Scope and confidence.** I read all eight application Python modules (2,969 lines), the dependency and hosting configuration, project notes, victory specification, and the schemas of the three legacy saved games. I also examined the checked-in error logs with sensitive values withheld. The content includes seven factions, 21 faction abilities, seven boss archetypes, nine locations, and 35 item ability templates.
@@ -135,4 +139,3 @@ Balance should follow correctness. Boss HP per starting player grows from 40 on 
 **Validation record.** Run `python -W ignore::DeprecationWarning audit/offline_reproductions.py` from the repository. The captured run completed 22 reproductions successfully; see `audit/reproduction-results.txt`. The script is intentionally labeled as an audit harness and will need its assertions changed to desired behavior as fixes land. It does not validate the real Telegram client, PostgreSQL transactions, dependency installation, provider availability, or concurrent production execution.
 
 No fixes were committed or pushed. The only additions are this review, the offline reproduction harness, and its recorded output.
-

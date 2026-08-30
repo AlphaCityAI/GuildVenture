@@ -78,6 +78,8 @@ locally; narration can never change the resolved state.
    deleting existing JSON. Existing recognized sessions are migrated lazily by
    the app; obsolete processing booleans are cleared during migration. Profiles
    gain stable item IDs and missing collection/reward fields when accessed.
+   Unrecognized legacy sessions are preserved and require maintainer inspection;
+   the bot never silently replaces an unknown saved schema.
 4. Test a two-player lobby, combat turn, bank, item claim, inventory change, and
    campaign completion in staging. Restart during a pending reward and confirm
    `/rewards` recovery. Verify real Telegram permissions and provider access.

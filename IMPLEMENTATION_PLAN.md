@@ -39,3 +39,25 @@ start together; all declared combat effects are supported; all six reward tiers
 are reachable; negative HP cannot leave an actor alive; campaign completion
 reaches victory; another chat remains responsive during slow narration; app
 imports and tests require no production credentials.
+
+## Completion and validation
+
+The implementation steps above are complete. The original monolithic handlers
+are now separated into domain, persistence, provider, and Telegram service modules.
+Regression coverage includes multiple simultaneous deaths, legacy campaign
+migration, visible `/status` recovery, and invalid startup settings.
+
+- Local Python 3.12: 63 tests passed; six database tests skipped without a local
+  disposable PostgreSQL server. Ruff and the frozen dependency lock check pass.
+- GitHub CI: all 69 tests passed on both Python 3.11 and 3.12 with PostgreSQL 16,
+  including additive migration, concurrent profile mutations, rollback, stale
+  session writes, and duplicate claims. See the
+  [database-backed validation run](https://github.com/drjnolen/GuildVenture/actions/runs/33292738766).
+- No live Telegram messages, paid provider calls, production database operations,
+  merge, or deployment were performed. The README staging and backup checklist
+  remains a deployment prerequisite.
+
+Deferred work: new game systems/balance changes, model migration evaluation,
+production telemetry dashboards, durable replay of optional scene art, and
+archival/privacy review of the legacy tracked player snapshots. Generation caps
+are per-process safeguards, not durable billing quotas.

@@ -28,11 +28,16 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/guildventure_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: '0.12.7'
+          python-version: ${{ matrix.python }}
+          enable-cache: false
       - run: uv python install ${{ matrix.python }}
       - run: uv sync --frozen --python ${{ matrix.python }}
-      - run: uv run ruff check .
-      - run: uv run pytest -q
+      - run: uv run --frozen python --version
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen pytest -q

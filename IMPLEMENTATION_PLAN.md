@@ -52,7 +52,9 @@ migration, visible `/status` recovery, and invalid startup settings.
 - GitHub CI: all 69 tests passed on both Python 3.11 and 3.12 with PostgreSQL 16,
   including additive migration, concurrent profile mutations, rollback, stale
   session writes, and duplicate claims. See the
-  [database-backed validation run](https://github.com/drjnolen/GuildVenture/actions/runs/33292738766).
+  [PR validation checks](https://github.com/drjnolen/GuildVenture/pull/4/checks).
+  The workflow explicitly selects each matrix interpreter so the local
+  `.python-version` pin cannot override the Python 3.11 test job.
 - No live Telegram messages, paid provider calls, production database operations,
   merge, or deployment were performed. The README staging and backup checklist
   remains a deployment prerequisite.

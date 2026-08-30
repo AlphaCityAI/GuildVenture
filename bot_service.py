@@ -13,6 +13,8 @@ from collections import OrderedDict
 from telegram.error import TelegramError
 
 import game
+import encounters
+import gameplay_content as content
 import presentation as ui
 import profiles
 from abilities import ABILITIES
@@ -20,6 +22,7 @@ from database import PersistenceError, StateConflict
 from game_constants import FACTIONS, GAUNTLET_ROUTES
 from item_traits import ITEM_SLOTS, ITEM_SPECIALTIES, RARITY_ORDER
 from profiles import InvalidAction
+from player_features import PlayerFeatures
 
 logger = logging.getLogger(__name__)
 
@@ -29,24 +32,32 @@ Gauntlet: choose a route, form a party, ready up, then the owner starts. Use abi
 
 Open Campaign: form a party and type an action on your turn. The game resolves a skill roll; completing the objective unlocks rewards.
 
-Hire Help creates saved character collectibles (no combat role yet). Dig for Treasure creates equipment. Level and titles track progress; they do not change base combat stats.
+AI designs boss moves, campaign chapters, ally skills, talents, crafting blueprints, and victory scenes. Published effects and resource costs are saved before use.
+Hire Help recruits allies. Deploy one with /allies. At levels 2, 5, and 10 choose a talent with /progression. Dig for Treasure creates equipment.
 
 /venture — open or resume the game
 /join — join the faction lobby (no joining mid-fight)
 /status or /resume — recover current controls
 /profile — XP and career stats
 /inventory — compare, filter, equip or discard items
-/collection — view saved character collectibles
+/allies or /collection — deploy and inspect your ally roster
+/progression — choose level-unlocked talents
+/craft — saved upgrade blueprint and material balance
+/recap — factual contributions from the last completed encounter
+/campaign — chapter progress and current objective
+/camp — current preparation controls
 /rewards — claim pending rewards, even from ended runs
 /settings — owner presentation options between fights
 /endgame — owner ends the run; already banked claims remain
 /help — this guide
 
-One game runs per chat, in its original topic. Equipped items refresh when the next floor or campaign starts. Rolls use +1 point per attempted floor and +1 per defeat, capped at 60; final reward rolls cap at 100. Inventory and rewards belong to the player opening their controls.
+One game runs per chat, in its original topic. Equipped items refresh when the next floor or chapter starts. Rolls use +1 point per attempted floor and +1 per defeat, capped at 60; final reward rolls cap at 100. Inventory and rewards belong to the player opening their controls.
+
+Boss intent is shown before your turn. Brace halves incoming damage to you; a successful counter (6+ d10) halves the published move. Both cost a turn. Ally support also costs a turn and refreshes only at the next encounter/chapter. Between floors/chapters, living players may rest once, change loadouts, and ready again. Completed chapters save XP/materials; the final chapter unlocks the run reward.
 """
 
 
-class BotService:
+class BotService(PlayerFeatures):
     def __init__(self, repository, ai, rng=None, default_images=True, free_roll_cooldown=30):
         self.repo, self.ai = repository, ai
         self.rng = rng or random.Random()
@@ -54,6 +65,7 @@ class BotService:
         self.locks = {}
         self.panels = {}
         self.inventory_views = OrderedDict()
+        self.personal_views = OrderedDict()
         self.tasks = set()
         self.closing = False
 
@@ -148,7 +160,9 @@ class BotService:
                 f"XP: {ui.bar(p['current_xp'], p['xp_to_next_level'])}\n"
                 f"Bosses: {stats['bosses_defeated']} defeated / {stats['bosses_attempted']} attempted\n"
                 f"Highest floor: {stats['highest_floor']} · Campaign actions: {stats['moves_made']}\n"
-                f"Pending rewards: {len(p['pending_rewards'])} · Character collectibles: {len(p['collectibles'])}",
+                f"Pending rewards: {len(p['pending_rewards'])} · Allies: {len(p['collectibles'])} · Materials: {p['materials']}\n"
+                f"Chapters: {stats['chapters_completed']} · Campaigns: {stats['campaigns_completed']}\n"
+                "Choose career talents with /progression; deploy a recruit with /allies.",
             )
         if command == "/leaderboard":
             leaders = await self.repo.top_profiles()
@@ -161,19 +175,19 @@ class BotService:
             )
         if command == "/inventory":
             return await self.show_inventory(update, context, await self.profile(user))
-        if command == "/collection":
-            p = await self.profile(user)
-            lines = [f"Character collectibles ({len(p['collectibles'])}) — cosmetic; no combat bonuses."]
-            for ally in p["collectibles"][-20:]:
-                lines.append(
-                    f"{ally['name']} · {ally['faction']} · {ally['rarity']} · Level {ally['level']}\n{ally.get('background', '')}"
-                )
-            return await self.say(update, context, "\n\n".join(lines))
+        if command in {"/collection", "/allies"}:
+            return await self.show_allies(update, context, await self.profile(user))
+        if command == "/progression":
+            return await self.show_progression(update, context, await self.profile(user))
+        if command == "/craft":
+            return await self.show_craft(update, context, await self.profile(user))
         state = await self.state(chat_id)
         if state:
             await self.flush_events(chat_id, state)
         if command == "/rewards":
             return await self.show_rewards(update, context, await self.profile(user))
+        if command == "/recap":
+            return await self.say(update, context, ui.recap_text(state.get("last_recap")))
         if command in {"/start", "/venture"}:
             daily = await self.repo.mutate_profile(
                 user.id,
@@ -202,7 +216,7 @@ class BotService:
             return await self.say(update, context, "No active game. Use /venture to start.")
         if update.effective_message.message_thread_id != state.get("thread_id"):
             raise InvalidAction("This chat's game is in another topic. Return there to play or resume.")
-        if command in {"/status", "/resume", "/settings"}:
+        if command in {"/status", "/resume", "/settings", "/camp", "/campaign"}:
             return await self.show_status(update, context, state, recover=True)
         if command == "/join":
             if state["phase"] != "lobby":
@@ -210,7 +224,9 @@ class BotService:
             return await self.show_status(update, context, state)
         if command == "/endgame":
             game.require_owner(state, user.id)
-            if state["phase"] in {"victory", "defeat"}:
+            if state["phase"] in {"victory", "defeat"} or (
+                state["phase"] == "preparation" and state["game_mode"] == "gauntlet"
+            ):
                 await self.bank(chat_id, state)
             state = game.new_state(user.id, state["thread_id"], state)
             await self.commit(chat_id, state)
@@ -234,7 +250,7 @@ class BotService:
             )
         result = game.resolve_campaign(state, user.id, text, assessment.model_dump(), self.rng)
         await self.commit(chat_id, state)
-        await self.send_result(update, context, result)
+        await self.send_result(update, context, result, state)
         await self.show_status(update, context, state)
 
     async def callback(self, update, context):
@@ -243,6 +259,10 @@ class BotService:
             return await self.inventory_callback(update, context, data)
         if data.startswith("r:"):
             return await self.claim_callback(update, context, data)
+        if data.startswith("p:"):
+            return await self.personal_callback(update, context, data)
+        if data.startswith("c:"):
+            return await self.craft_callback(update, context, data)
         chat_id, user = update.effective_chat.id, update.effective_user
         state = await self.state(chat_id)
         if not state:
@@ -269,7 +289,7 @@ class BotService:
             if state["gauntlet_level"] == 1:
                 state["phase"] = "lobby"
             else:
-                await self.prepare_floor(state)
+                game.enter_preparation(state)
         elif action == "faction":
             if argument not in FACTIONS:
                 raise InvalidAction("Unknown faction.")
@@ -284,25 +304,60 @@ class BotService:
             if player is None:
                 raise InvalidAction("Choose a faction before readying up.")
             player["ready"] = not player["ready"]
+            if player["ready"]:
+                player["ready_version"] = (await self.profile(user))["loadout_version"]
         elif action == "leave":
             state["players"] = [p for p in state["players"] if p["id"] != user.id]
         elif action == "start":
             if not state["players"] or not all(p["ready"] for p in state["players"]):
                 raise InvalidAction("At least one player must join, and everyone must be ready.")
+            loadouts = await self.participant_profiles(state)
+            changed = [
+                p
+                for p in state["players"]
+                if p.get("ready_version", p.get("loadout_version", 0)) != loadouts[p["id"]]["loadout_version"]
+            ]
+            if changed:
+                for player in changed:
+                    player["ready"] = False
+                await self.commit(chat_id, state)
+                await self.say(
+                    update,
+                    context,
+                    "Loadouts changed: " + ", ".join(p["username"] for p in changed) + ". Please ready again.",
+                )
+                return await self.show_status(update, context, state)
             if state["game_mode"] == "gauntlet":
-                await self.prepare_floor(state)
+                await self.prepare_floor(state, loadouts)
             else:
-                await self.prepare_campaign(state)
+                await self.prepare_campaign(state, loadouts)
+        elif action == "rest":
+            notice = game.rest(state, user.id)
+            await self.commit(chat_id, state)
+            await self.say(update, context, notice)
+            return await self.show_status(update, context, state)
+        elif action == "chapter":
+            await self.advance_chapter(state, argument)
         elif action == "boss":
             return await self.say(update, context, self.boss_info(state))
-        elif action in {"ability", "environment"}:
+        elif action in {"ability", "environment", "tactic", "ally"}:
             try:
                 index = int(argument) if action == "ability" else None
             except ValueError as exc:
                 raise InvalidAction("Invalid ability control.") from exc
-            result = game.resolve_combat(state, user.id, index, action == "environment", self.rng)
+            if action == "ally" and state["phase"] == "campaign":
+                result = game.resolve_campaign_support(state, user.id)
+            else:
+                result = game.resolve_combat(
+                    state,
+                    user.id,
+                    index,
+                    action == "environment",
+                    self.rng,
+                    tactic="ally" if action == "ally" else argument if action == "tactic" else None,
+                )
             await self.commit(chat_id, state)
-            await self.send_result(update, context, result)
+            await self.send_result(update, context, result, state)
             return await self.show_status(update, context, state)
         elif action == "continue":
             if state["game_mode"] != "gauntlet":
@@ -320,53 +375,91 @@ class BotService:
             state["settings"]["images"] = not state["settings"]["images"]
         await self.commit(chat_id, state)
         await self.show_status(update, context, state)
-        if action in {"start", "route"} and state["phase"] in {"combat", "campaign"}:
+        if action in {"start", "chapter"} and state["phase"] in {"combat", "campaign"}:
             self.schedule_scene(context.bot, chat_id, copy.deepcopy(state))
 
-    async def prepare_floor(self, state):
+    async def participant_profiles(self, state):
+        result = {}
         for player in state["players"]:
             profile = await self.repo.load_profile(player["id"])
             if profile is None:
                 raise PersistenceError("Participant profile is missing")
-            game.refresh_loadout(player, profile)
-        game.start_floor(state, self.rng)
-        flavor = await self.ai.boss_flavor(state["boss"], state["location"])
-        if flavor:
-            state["boss"].update(name=flavor.name, description=flavor.background)
-            state["objective"] = f"Defeat {flavor.name}"
+            migrated = await self.repo.mutate_profile(player["id"], lambda p: profiles.normalize(p) and None)
+            result[player["id"]] = migrated.profile
+        return result
 
-    async def send_result(self, update, context, result):
+    async def prepare_floor(self, state, loadouts=None):
+        loadouts = loadouts or await self.participant_profiles(state)
+        for player in state["players"]:
+            game.refresh_loadout(player, loadouts[player["id"]])
+        game.start_floor(state, self.rng)
+        design = await self.ai.encounter(state)
+        source = "AI" if design else "fallback"
+        design = design or content.fallback_encounter(state["boss"], self.rng)
+        encounters.install_design(state, design.model_dump(), source)
+
+    async def send_result(self, update, context, result, state=None):
         # The full turn is already persisted. Failed narration cannot roll back
         # HP, consume a second charge, or leave a durable processing lock.
+        if state and state["phase"] in {"victory", "chapter_complete"} and state.get("last_recap"):
+            recap = state["last_recap"]
+            if not recap.get("story"):
+                story = await self.ai.victory(recap)
+                if story:
+                    recap["story"] = story.text
+                    await self.commit(update.effective_chat.id, state)
+            return await self.say(update, context, result)
         narrative = await self.ai.narrate(result)
         await self.say(update, context, result + ("\n\n" + narrative.text if narrative else ""))
 
-    async def prepare_campaign(self, state):
+    async def prepare_campaign(self, state, loadouts=None):
         from locations import LOCATIONS
 
-        location = copy.deepcopy(self.rng.choice(LOCATIONS))
-        scene = await self.ai.scene([p["username"] for p in state["players"]], location)
+        loadouts = loadouts or await self.participant_profiles(state)
         for player in state["players"]:
-            profile = await self.repo.load_profile(player["id"])
-            if profile is None:
-                raise PersistenceError("Participant profile is missing")
-            game.refresh_loadout(player, profile)
+            game.refresh_loadout(player, loadouts[player["id"]])
+        if state.get("campaign"):
+            game.start_chapter(state)
+            return
+        location = copy.deepcopy(self.rng.choice(LOCATIONS))
+        plan = await self.ai.campaign([p["faction"] for p in state["players"]], location, state["run_id"])
+        source = "AI" if plan else "fallback"
+        plan = plan or content.fallback_campaign(location, self.rng)
         state.update(
-            phase="campaign",
+            phase="chapter_briefing",
             location=location,
             boss=None,
-            turn_index=0,
-            last_result="",
-            objective=scene.objective
-            if scene
-            else f"Recover the encrypted access key in {location['name']} and escape.",
-            narrative_log=[
-                scene.opening_scene if scene else "A guarded terminal holds a valuable access key. Plan your approach."
-            ],
+            campaign={**plan.model_dump(), "source": source, "index": 0, "completed": []},
         )
 
+    async def advance_chapter(self, state, argument):
+        campaign = state["campaign"]
+        initial = state["phase"] == "chapter_briefing"
+        target = campaign["index"] if initial else campaign["index"] + 1
+        try:
+            choice = int(argument)
+            approaches = campaign["chapters"][target]["approaches"]
+            if not 0 <= choice < len(approaches):
+                raise ValueError
+        except (ValueError, IndexError) as exc:
+            raise InvalidAction("Invalid chapter approach. Use /campaign.") from exc
+        approach = copy.deepcopy(approaches[choice])
+        if not initial:
+            chapter = await self.ai.chapter(state, approach)
+            if chapter:
+                campaign["chapters"][target] = chapter.model_dump()
+            campaign["chapter_source"] = "AI" if chapter else "saved outline fallback"
+            campaign["index"] = target
+        state["chapter_approach"] = approach
+        game.enter_preparation(state)
+
     async def bank(self, chat_id, state):
-        if state["phase"] not in {"victory", "defeat"}:
+        preparing_gauntlet = (
+            state["phase"] == "preparation"
+            and state["game_mode"] == "gauntlet"
+            and state["gauntlet_bonus_defeated"] > 0
+        )
+        if state["phase"] not in {"victory", "defeat"} and not preparing_gauntlet:
             raise InvalidAction("No completed run is ready to bank.")
         seen = set()
         for player in state["players"] + state["dead_players"]:
@@ -393,7 +486,7 @@ class BotService:
             rows = [
                 [control("Gauntlet", "mode", "gauntlet"), control("Open Campaign", "mode", "open_campaign")],
                 [
-                    control("Hire Help (collectible)", "mode", "hire_help"),
+                    control("Hire Help (ally)", "mode", "hire_help"),
                     control("Dig for Treasure", "mode", "dig_treasure"),
                 ],
             ]
@@ -410,12 +503,60 @@ class BotService:
                 f"{'Ready' if p['ready'] else 'Not ready'}: {p['username']} · {p['faction']}" for p in state["players"]
             ]
             lines.append("Everyone chooses Ready; the owner then starts. Solo play works the same way.")
+            lines.append(
+                "Prepare with /inventory, /allies, and /progression. Changes after Ready require readying again."
+            )
             factions = list(FACTIONS)
             rows = [[control(f, "faction", f) for f in factions[i : i + 2]] for i in range(0, len(factions), 2)]
             rows += [
                 [control("Ready / Not ready", "ready"), control("Leave lobby", "leave")],
                 [control("Start (owner)", "start")],
             ]
+        elif phase == "preparation":
+            title = (
+                f"Floor {state['gauntlet_level']}"
+                if state["game_mode"] == "gauntlet"
+                else f"Chapter {state['campaign']['index'] + 1}: {state['campaign']['chapters'][state['campaign']['index']]['title']}"
+            )
+            lines = [
+                f"Preparation — {title}",
+                "Living players may rest once for up to 25% max HP, equip/craft, deploy an ally, and choose talents. Everyone readies again before the owner starts.",
+                "/inventory · /craft · /allies · /progression",
+            ]
+            if state.get("chapter_approach") and state["game_mode"] == "open_campaign":
+                lines.append("Chapter design: " + state["campaign"].get("chapter_source", state["campaign"]["source"]))
+                lines.append(
+                    "Approach: " + state["chapter_approach"]["label"] + " — " + state["chapter_approach"]["detail"]
+                )
+                lines.append(state["campaign"]["chapters"][state["campaign"]["index"]]["objective"])
+            lines += [
+                f"{'Ready' if p['ready'] else 'Not ready'}: {p['username']} · {ui.bar(p['hp'], p['max_hp'])}"
+                + (" · rested" if p["id"] in state["camp_rest"] else "")
+                for p in state["players"]
+            ]
+            rows = [
+                [control("Rest once", "rest"), control("Ready / Not ready", "ready")],
+                [control("Start (owner)", "start")],
+            ]
+            if state["game_mode"] == "gauntlet":
+                rows.append([control("Bank instead (owner)", "bank")])
+        elif phase in {"chapter_briefing", "chapter_complete"}:
+            campaign = state["campaign"]
+            target = campaign["index"] if phase == "chapter_briefing" else campaign["index"] + 1
+            chapter = campaign["chapters"][target]
+            lines = [
+                f"{campaign['title']} · {campaign['source']} design",
+                campaign["premise"],
+                f"Saved chapters: {len(campaign['completed'])}/{len(campaign['chapters'])}",
+                f"Next: Chapter {target + 1} — {chapter['title']}",
+                chapter["objective"],
+                "Owner chooses an approach, then the party prepares and readies.",
+            ]
+            if phase == "chapter_complete":
+                lines.insert(0, ui.recap_text(state.get("last_recap")))
+            for index, approach in enumerate(chapter["approaches"]):
+                lines.append(f"{approach['label']} — {approach['detail']}")
+                rows.append([control(approach["label"], "chapter", str(index))])
         elif phase in {"combat", "campaign"}:
             lines = [
                 f"Floor {state['gauntlet_level']}" if phase == "combat" else "Open Campaign",
@@ -427,6 +568,13 @@ class BotService:
                 lines.append(f"{boss['name']}: {ui.bar(boss['hp'], boss['max_hp'])}")
                 route = GAUNTLET_ROUTES.get(state.get("selected_route"), GAUNTLET_ROUTES["default"])
                 lines.append(f"Route: {route['name']} · {state.get('hazard_effect', {}).get('label', '')}")
+                lines.append(encounters.intent_text(state))
+                lines.append(f"Encounter design: {boss.get('design_source', 'legacy')}.")
+            elif state.get("campaign"):
+                campaign = state["campaign"]
+                lines.append(f"{campaign['title']} · Chapter {campaign['index'] + 1}/{len(campaign['chapters'])}")
+                lines.append("Chapter design: " + campaign.get("chapter_source", campaign["source"]))
+                lines.append("Approach: " + (state.get("chapter_approach") or {}).get("label", "Original objective"))
             lines += [f"{p['username']}: {ui.bar(p['hp'], p['max_hp'])}" for p in state["players"]]
             if state["dead_players"]:
                 lines.append("Fallen: " + ", ".join(p["username"] for p in state["dead_players"]))
@@ -450,7 +598,18 @@ class BotService:
                     ]
                     if game.environmental_available(state):
                         rows.append([control(state["location"]["interaction"]["name"], "environment")])
+                    tactics = [control("Brace (half damage to you)", "tactic", "guard")]
+                    if state["boss"].get("intent"):
+                        tactics.append(
+                            control("Counter " + state["boss"]["intent"]["counter_category"], "tactic", "counter")
+                        )
+                    rows.append(tactics)
                     rows.append([control("Boss info", "boss")])
+                ally = actor.get("ally")
+                if ally:
+                    lines.append(f"Deployed ally: {ally['name']} · {ally['charges']} support uses left.")
+                    if ally["charges"] > 0:
+                        rows.append([control("Ally: " + ally["support"]["name"] + " (uses turn)", "ally")])
             if phase == "campaign" and state.get("narrative_log"):
                 lines.append(state["narrative_log"][-1])
         elif phase in {"victory", "defeat"}:
@@ -458,6 +617,10 @@ class BotService:
                 "Victory!" if phase == "victory" else "The party has fallen.",
                 f"Bank bonus: +{game.run_bonus(state)} roll points (+1 per attempt and defeat, capped at 60).",
             ]
+            if state.get("last_recap"):
+                lines.append(ui.recap_text(state["last_recap"]))
+            if phase == "victory":
+                lines.append("Completion XP/materials and deployed ally bond are saved. See /progression and /craft.")
             odds = game.reward_odds(20, game.run_bonus(state))
             lines.append("Reward odds: " + " · ".join(f"{name} {chance:.1%}" for name, chance in odds.items()))
             if phase == "victory" and state["game_mode"] == "gauntlet":
@@ -469,7 +632,7 @@ class BotService:
                 "Each player can use /rewards to choose their own reward, now or later.",
             ]
             rows = [[control("New venture (owner)", "reset")]]
-        if phase in {"menu", "scout", "lobby"}:
+        if phase in {"menu", "scout", "lobby", "preparation"}:
             rows.append([control(f"Images: {'on' if state['settings']['images'] else 'off'} (owner)", "images")])
         if recover and state.get("last_result"):
             await self.say(update, context, "Last saved action:\n" + state["last_result"])
@@ -493,6 +656,13 @@ class BotService:
                 lines.append(
                     f"{title}: {effect.get('damage_type', effect.get('category', effect.get('faction', '')))} ×{effect['value']:g}"
                 )
+        lines.append(encounters.intent_text(state))
+        if boss.get("design"):
+            design = boss["design"]
+            lines.append(
+                f"At {design['phase_threshold']}% HP or below, phase {design['phase_name']} adds "
+                f"{design['phase_power_bonus']} power to subsequent intents (cap 6 party / 10 single). The current intent is unchanged."
+            )
         return "\n".join(lines)
 
     async def free_reward(self, update, context, state, mode):
@@ -573,7 +743,7 @@ class BotService:
         lines = [
             notice,
             f"{profile['username']}'s inventory",
-            "Equipped — applies at the next floor or campaign start:",
+            "Equipped — applies at the next floor or chapter:",
         ]
         rows = []
         for slot, item in profile["equipped_items"].items():
@@ -618,9 +788,26 @@ class BotService:
         ):
             raise InvalidAction("This inventory view expired. Open /inventory again.")
         profile = await self.profile(user)
+        if action == "forge":
+            return await self.request_blueprint(update, context, argument)
+        if action == "salvage":
+            if view.get("confirm_id") != argument or view.get("confirm_action") != "salvage":
+                raise InvalidAction("Confirm the exact item and salvage yield first.")
+            changed = await self.repo.mutate_profile(
+                user.id, lambda p: profiles.salvage_item(p, argument), f"salvage:{nonce}:{argument}"
+            )
+            return await self.show_inventory(
+                update,
+                context,
+                changed.profile,
+                view,
+                f"Salvaged {changed.result['name']}: +{changed.result['materials']} materials. Balance {changed.result['balance']}.",
+            )
         if action in {"equip", "unequip", "discard"}:
             if action == "discard" and view.get("confirm_id") != argument:
                 raise InvalidAction("Please confirm the exact item before discarding it.")
+            if action == "discard" and view.get("confirm_action") != "discard":
+                raise InvalidAction("Use the discard confirmation for this item.")
             changed = await self.repo.mutate_profile(
                 user.id,
                 lambda p: profiles.inventory_action(p, action, argument),
@@ -629,7 +816,7 @@ class BotService:
             return await self.show_inventory(
                 update, context, changed.profile, view, f"{action.capitalize()}: {changed.result}."
             )
-        if action in {"view", "confirm"}:
+        if action in {"view", "confirm", "scrapask"}:
             item = next((i for i in profile["inventory"] if i["id"] == argument), None)
             if item is None:
                 raise InvalidAction("This item is no longer in the backpack. Use /inventory.")
@@ -641,14 +828,22 @@ class BotService:
             lines = [ui.item_text(item), item.get("background", "")]
             equipped = profile["equipped_items"].get(item["slot"])
             lines.append("Currently equipped:\n" + (ui.item_text(equipped) if equipped else "Empty slot"))
-            if action == "confirm":
+            if action in {"confirm", "scrapask"}:
                 view["confirm_id"] = argument
-                lines.append("Discard this exact item permanently? This cannot be undone.")
-                rows = [[control("Yes, discard this item", "discard", argument)], [control("Cancel", "view", argument)]]
+                operation = "salvage" if action == "scrapask" else "discard"
+                view["confirm_action"] = operation
+                lines.append(
+                    f"Salvage this exact item for {profiles.salvage_value(item)} materials? The item will be consumed."
+                    if operation == "salvage"
+                    else "Discard this exact item permanently? This cannot be undone."
+                )
+                rows = [[control("Confirm " + operation, operation, argument)], [control("Cancel", "view", argument)]]
             else:
                 view.pop("confirm_id", None)
+                view.pop("confirm_action", None)
                 rows = [
                     [control("Equip", "equip", argument), control("Discard…", "confirm", argument)],
+                    [control("Salvage…", "scrapask", argument), control("Upgrade blueprint", "forge", argument)],
                     [control("Back to inventory", "back")],
                 ]
             return await ui.panel(
@@ -719,6 +914,7 @@ class BotService:
                     "faction": faction,
                     "background": "A new contact from the streets of Alpha City.",
                 }
+                payload.update(support=content.fallback_support(payload), bond=0, design_source="fallback")
             payload.update(roll, id=reward_id)
             return payload
 
@@ -729,9 +925,14 @@ class BotService:
         await self.say(
             update, context, "Reward reserved. Preparing your collectible; it remains recoverable through /rewards."
         )
-        flavor = await self.ai.flavor(payload["kind"], payload)
-        if flavor:
-            payload.update(name=flavor.name, background=flavor.background)
+        if payload["kind"] == "character":
+            design = await self.ai.ally(payload)
+            if design:
+                payload.update(design.model_dump(), design_source="AI")
+        else:
+            flavor = await self.ai.flavor(payload["kind"], payload)
+            if flavor:
+                payload.update(name=flavor.name, background=flavor.background)
         receipt = await self.repo.mutate_profile(
             user.id, lambda p: profiles.grant_reward(p, reward_id, payload), f"claim:{reward_id}"
         )
@@ -745,14 +946,18 @@ class BotService:
         reward = receipt["reward"]
         if reward["kind"] == "item":
             detail = (
-                ui.item_text(reward) + "\nSaved in /inventory. Equipment applies at the next floor or campaign start."
+                ui.item_text(reward)
+                + "\nSaved in /inventory. Equipment applies at the next floor or chapter.\n"
+                + reward["background"]
             )
         else:
-            detail = f"{reward['name']}\n{reward['faction']} · {reward['rarity']} · Level {reward['level']}\nSaved in /collection (cosmetic; no combat role)."
+            ally = copy.deepcopy(reward)
+            ally.setdefault("support", content.fallback_support(ally))
+            detail = ui.ally_text(ally) + "\nSaved in /allies. Deploy before the next encounter/chapter."
         text = (
             f"{'Saved reward receipt' if replay else 'Reward claimed'}\n"
             f"Roll {reward['base_roll']} + {reward['bonus']} points = {reward['roll']} → {reward['rarity']}\n\n"
-            f"{detail}\n\n{reward['background']}\n\n{receipt['xp']} XP awarded once. Level {receipt['level']}."
+            f"{detail}\n\n{receipt['xp']} XP awarded once. Level {receipt['level']}."
         )
         image = await self.ai.image(f"{reward['name']}. {reward['background']}") if images else None
         await ui.reward_card(
@@ -774,6 +979,7 @@ class BotService:
                 if (
                     current.get("run_id") != snapshot["run_id"]
                     or current.get("gauntlet_level") != snapshot["gauntlet_level"]
+                    or current.get("campaign", {}).get("index") != snapshot.get("campaign", {}).get("index")
                     or current.get("phase") not in {"combat", "campaign"}
                 ):
                     return

@@ -1,5 +1,8 @@
 # Reliability and UX implementation
 
+Historical plan for merged PR #4. The subsequent gameplay work is described in
+[GAMEPLAY_PLAN.md](GAMEPLAY_PLAN.md); the README describes current behavior.
+
 Branch: `fix/reliability-and-ux`. Base: `2451f14`.
 
 Scope: correct existing behavior and improve Telegram usability. No new factions,

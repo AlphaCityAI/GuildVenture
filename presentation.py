@@ -146,3 +146,39 @@ async def reward_card(bot, chat_id, thread_id, text, image=None):
                 await send(bot, chat_id, thread_id, piece)
             return
     await send(bot, chat_id, thread_id, text)
+
+
+def ally_text(ally):
+    skill = ally["support"]
+    rank = min(3, 1 + ally.get("bond", 0) // 3)
+    value = min(8, skill["value"] + rank - 1)
+    effect = {
+        "strike": f"{value} base damage (campaign: +{value * 2} next-action points)",
+        "heal": f"{value} base self healing",
+        "focus": f"+{value * 2} next-action points",
+    }[skill["kind"]]
+    return (
+        f"{ally['name']} · {ally.get('faction', 'Contact')} · {ally.get('rarity', '')}\n"
+        f"Bond {ally.get('bond', 0)} · Rank {rank} · {2 if rank == 3 else 1} uses/encounter\n"
+        f"{skill['name']}: {effect}. Costs your turn.\nDesign: {ally.get('design_source', 'legacy')}.\n{ally.get('background', '')}"
+    )
+
+
+def recap_text(recap):
+    if not recap:
+        return "No completed encounter report yet. Finish a boss or campaign chapter first."
+    lines = [recap["title"]]
+    if recap.get("partial"):
+        lines.append("Partial report: this encounter began before contribution tracking was enabled.")
+    for p in recap["participants"]:
+        lines.append(
+            f"{p['username']} · {p['faction']}{' · fallen' if p['fallen'] else ''}\n"
+            f"{p['damage']} damage · {p['healing']} healing · {p['blocked']} blocked · "
+            f"{p['support']} support actions · {p['objectives']} objectives · {p['criticals']} criticals · {p['turns']} turns\n"
+            f"Ally contribution: {p['ally_damage']} damage / {p['ally_healing']} healing. " + ", ".join(p["honors"])
+        )
+    if recap.get("streak", 0) > 1:
+        lines.append(f"Streak: {recap['streak']} floors undefeated.")
+    if recap.get("story"):
+        lines.append(recap["story"])
+    return "\n\n".join(lines)

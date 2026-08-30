@@ -10,7 +10,7 @@ from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filt
 
 from ai_service import AIService
 from bot_service import BotService
-from database import connect
+from database import DatabaseStartupError, connect, validate_database_url
 
 logger = logging.getLogger(__name__)
 COMMANDS = [
@@ -21,7 +21,13 @@ COMMANDS = [
     ("resume", "Resume this chat's game"),
     ("profile", "XP and career stats"),
     ("inventory", "Compare and manage equipment"),
-    ("collection", "Saved character collectibles"),
+    ("collection", "Saved ally roster"),
+    ("allies", "Inspect and deploy an ally"),
+    ("progression", "Choose career talents"),
+    ("craft", "Workshop preview and materials"),
+    ("recap", "Last encounter contributions"),
+    ("campaign", "Chapter progress and objective"),
+    ("camp", "Preparation and readiness"),
     ("rewards", "Claim rewards or resend receipts"),
     ("leaderboard", "Top gauntlet runs"),
     ("settings", "Owner presentation settings"),
@@ -110,7 +116,11 @@ def main():
     missing = [key for key in ("TELEGRAM_TOKEN", "DATABASE_URL", "OPENAI_API_KEY") if not os.getenv(key)]
     if missing:
         raise SystemExit("Missing required configuration: " + ", ".join(missing))
-    build_application(os.environ["TELEGRAM_TOKEN"]).run_polling()
+    try:
+        validate_database_url()  # Fail bad configuration before initializing Telegram.
+        build_application(os.environ["TELEGRAM_TOKEN"]).run_polling()
+    except DatabaseStartupError as exc:
+        raise SystemExit(f"Startup failed: {exc}") from None
 
 
 if __name__ == "__main__":

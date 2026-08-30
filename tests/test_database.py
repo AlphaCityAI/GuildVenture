@@ -238,3 +238,36 @@ async def test_real_migration_permission_failure_closes_pool_and_preserves_data(
         await database.connect(os.environ["TEST_DATABASE_URL"])
     assert len(pools) == 1 and pools[0].is_closing()
     assert await db.load_state(1) == {"legacy": True, "_revision": 0}
+
+
+@pytest.mark.parametrize("mode", ["gauntlet", "open_campaign"])
+async def test_rendered_multiplayer_lobby_survives_jsonb_roundtrips_and_concurrent_readiness(db, rig, mode):
+    from bot_service import BotService
+    from test_playable_flows import TelegramUI
+
+    rig.repo = db
+    rig.service = BotService(db, rig.ai, default_images=False)
+    ui = TelegramUI(rig)
+    await ui.command("/venture")
+    await ui.press(action="mode", argument=mode)
+    if mode == "gauntlet":
+        await ui.press(action="route", argument="default")
+    panel = ui.latest
+    await ui.press(action="faction", argument="Nodewalker", message=panel)
+    first = ui.latest
+    await ui.press(action="faction", argument="Coinbroker", uid=2, message=panel)
+    second = ui.latest
+    await ui.press(action="images", message=panel)
+    await asyncio.gather(
+        ui.press(label="Choose this faction", message=first),
+        ui.press(label="Choose this faction", uid=2, message=second),
+    )
+    await asyncio.gather(*[ui.press(action="ready", argument="1", uid=uid, message=panel) for uid in (1, 2)])
+    state = await db.load_state(ui.chat)
+    assert {p["id"] for p in state["players"]} == {1, 2} and all(p["ready"] for p in state["players"])
+    await ui.press(action="start", message=panel)
+    state = await db.load_state(ui.chat)
+    assert state["phase"] == ("combat" if mode == "gauntlet" else "chapter_briefing")
+    assert not rig.service.locks and not rig.service.lock_users
+    # Images were enabled to test harmless changes; explicitly drain optional tasks.
+    await asyncio.gather(*rig.service.tasks)

@@ -4,7 +4,8 @@ A cooperative cyberpunk RPG played through a Telegram bot. AI authors encounter
 mechanics, chapters, ally skills, talent choices, crafting designs, and narration.
 Python validates those contracts, executes their published effects, and protects
 progress and resources. PostgreSQL stores sessions, profiles, and an idempotent
-event ledger. The current feature plan is [GAMEPLAY_PLAN.md](GAMEPLAY_PLAN.md).
+event ledger. The feature plan is [GAMEPLAY_PLAN.md](GAMEPLAY_PLAN.md); the subsequent
+solo/multiplayer reliability review is [PLAYABILITY_REVIEW.md](PLAYABILITY_REVIEW.md).
 
 ## Run locally
 
@@ -15,23 +16,39 @@ environment; it does **not** automatically load a `.env` file. Never commit keys
 
 Startup applies the additive SQL migrations under `migrations/`. Run one polling
 process per Telegram bot token. Independent chats process concurrently (maximum
-16 handlers); actions within one chat are serialized, and busy taps receive an
-immediate explanation. Session writes use revision checks. Global profile
+16 handlers); actions within one chat are serialized. Button presses are acknowledged
+immediately and may wait up to three seconds behind another action; longer waits
+receive a retry notice. Text commands during an active action receive a busy notice.
+Session writes use revision checks. Global profile
 updates use short row-lock transactions, including first-time profile creation.
 
 ## Player flow
 
 - `/start` or `/venture` opens a menu or resumes the current game.
+  Reopening a menu does not replace its run or owner. At an idle menu, **Host a
+  new venture** explicitly lets another player host; active games cannot be taken over.
 - The owner chooses a mode/route. Players preview factions, join, and ready up.
-  The owner explicitly starts the encounter. `/join` never changes a live boss.
+  Press **Choose this faction**, then **Ready**, then **Start (owner)**. One ready
+  player is sufficient for solo play, including private chats. In multiplayer,
+  each player chooses and readies themselves; shared lobby buttons remain usable
+  when someone else joins. **Ready** and **Not ready** set an explicit value, so
+  duplicate taps do not toggle it back. `/join` never changes a live boss.
   Campaign startup generates a saved briefing; the owner chooses an approach,
   then the party prepares and readies for the first chapter.
-- Use ability buttons during a gauntlet and typed actions during a campaign.
+- Use ability buttons during a gauntlet and `/act <your action>` during a campaign.
+  In groups with several bots, use `/act@YourBotUsername <your action>` or reply
+  to the bot's message. Ordinary text may not reach the bot under Telegram's
+  default group privacy mode; private-chat text continues to work. There is no
+  need to disable privacy mode. See [Telegram's privacy rules](https://core.telegram.org/bots/features#privacy-mode).
   `/status` or `/resume` restores the current controls after a restart or lost
   message. Boss Info does not remove the combat panel.
 - After victory, the owner ascends or banks a claim for each participant,
   including fallen participants. `/rewards` lists pending claims and recent
   receipts. Claiming a reward does not reset another player's claim.
+  Banking remains available while scouting or preparing the next floor.
+- Hire Help and Dig for Treasure are personal menu activities available to any
+  player; they do not require taking ownership of the group's game. Their free-roll
+  buttons remain single-use, with cooldowns and receipt recovery unchanged.
 - `/inventory` filters by slot/rarity, compares items, and uses stable item IDs.
   Changes take effect at the next floor or chapter. Discard and salvage require
   separate confirmations for that item on the current owner-bound view.
@@ -44,6 +61,15 @@ updates use short row-lock transactions, including first-time profile creation.
 - `/endgame` is owner-only. Pending reward claims remain in player profiles.
   Completed runs are banked before returning to the menu. Active fights are
   abandoned without additional victory rewards.
+
+Faction confirmations and lobby controls last for that lobby. Camp controls last
+for that floor/chapter; combat controls last for the exact turn shown. Database
+event cleanup, optional narration, and other players readying no longer invalidate
+unrelated controls. Old turns/runs are never replayed: tapping an obsolete panel
+automatically sends the current controls. Joining, readiness, and completed actions
+send the next panel at the bottom of the conversation so success is visible.
+Controls issued before this fix still validate at their exact saved revision;
+if expired, they recover to the new controls without resetting the game.
 
 ## AI gameplay
 

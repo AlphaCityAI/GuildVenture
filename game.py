@@ -118,21 +118,61 @@ def upgrade_gameplay(state):
         }
 
 
+class StaleControl(InvalidAction):
+    """Recover the current panel without replaying an obsolete action."""
+
+
+def control_token(state, action, argument=""):
+    # Storage revisions also change for event delivery and optional narration.
+    # Controls instead belong to a lobby, encounter preparation, or exact turn.
+    # Free rolls retain one-use revisions because repeating them awards resources.
+    if action == "mode" and argument in {"hire_help", "dig_treasure"}:
+        return str(state["_revision"])
+    phase = state["phase"]
+    encounter = (
+        f"g{state['gauntlet_level']}"
+        if state.get("game_mode") == "gauntlet"
+        else f"c{state.get('campaign', {}).get('index', 0)}"
+    )
+    if phase in {"combat", "campaign"}:
+        return ("t" if phase == "combat" else "a") + str(state["turn_id"])
+    return {
+        "menu": "m",
+        "lobby": "l",
+        "scout": "s" + encounter,
+        "preparation": "p" + encounter,
+        "chapter_briefing": "b" + encounter,
+        "chapter_complete": "c" + encounter,
+        "victory": "v" + encounter,
+        "defeat": "d" + encounter,
+        "rewards": "r",
+    }.get(phase, str(state["_revision"]))
+
+
 def callback_data(state, action, argument=""):
-    return f"g:{state['run_id']}:{state['_revision']}:{action}:{argument}"
+    if action == "ready" and argument == "":
+        argument = "1"
+    if action == "images" and argument == "":
+        argument = "0" if state["settings"]["images"] else "1"
+    return f"g:{state['run_id']}:{control_token(state, action, argument)}:{action}:{argument}"
 
 
 def validate_callback(state, data, user_id, thread_id):
+    if thread_id != state.get("thread_id"):
+        raise InvalidAction("This game is in a different topic. Return to its original topic.")
     try:
-        prefix, run_id, revision, action, argument = data.split(":", 4)
-        valid = prefix == "g" and run_id == state.get("run_id") and int(revision) == state.get("_revision")
+        prefix, run_id, token, action, argument = data.split(":", 4)
+        # Already-issued numeric controls remain valid only at their exact revision.
+        current = str(state.get("_revision")) if token.isdecimal() else control_token(state, action, argument)
+        valid = prefix == "g" and run_id == state.get("run_id") and token == current
     except (ValueError, TypeError):
         valid = False
     if not valid:
-        raise InvalidAction("These controls have expired. Use /status for the current game.")
-    if thread_id != state.get("thread_id"):
-        raise InvalidAction("This game is in a different topic. Return to its original topic.")
+        raise StaleControl(
+            "That panel is from an earlier step. Your action was not repeated; current controls are below."
+        )
     phases = {
+        "host": {"menu"},
         "mode": {"menu"},
         "route": {"scout"},
         "faction": {"lobby"},
@@ -148,13 +188,27 @@ def validate_callback(state, data, user_id, thread_id):
         "environment": {"combat"},
         "boss": {"combat"},
         "continue": {"victory"},
-        "bank": {"victory", "defeat", "preparation"},
+        "bank": {"victory", "defeat", "preparation", "scout"},
         "reset": {"victory", "defeat", "rewards"},
         "images": {"menu", "lobby", "scout", "preparation"},
+        "refresh": {
+            "menu",
+            "scout",
+            "lobby",
+            "preparation",
+            "combat",
+            "campaign",
+            "chapter_briefing",
+            "chapter_complete",
+            "victory",
+            "defeat",
+            "rewards",
+        },
     }
     if action not in phases or state.get("phase") not in phases[action]:
         raise InvalidAction("That action is not available now. Use /status.")
-    if action in {"mode", "route", "start", "continue", "bank", "reset", "images", "chapter"}:
+    personal_roll = action == "mode" and argument in {"hire_help", "dig_treasure"}
+    if action in {"mode", "route", "start", "continue", "bank", "reset", "images", "chapter"} and not personal_roll:
         require_owner(state, user_id)
     if action in {"ability", "environment", "tactic", "ally"}:
         require_actor(state, user_id)
@@ -668,7 +722,7 @@ def resolve_combat(state, user_id, ability_index=None, environment=False, rng=ra
 
 
 def support_effect(skill):
-    damage_type = {"technology": "Energy", "communication": "Mercantile", "strength": "Kinetic", "stealth": "Darkness"}[
+    damage_type = {"technology": "Enertech", "communication": "Mercantile", "strength": "Kinetic", "stealth": "Umbral"}[
         skill["category"]
     ]
     return {
